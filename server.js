@@ -52,8 +52,8 @@ app.post("/create-booking", async (req, res) => {
       .insert([booking]);
 
     if (error) {
-      return res.status(400).json(error);
-    }
+  console.log("SUPABASE ERROR:", error);
+  return res
 
     res.json({
       success: true,
