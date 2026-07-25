@@ -90,7 +90,20 @@ app.get("/", (req, res) => {
     "Kaushalya Guest House Backend Running"
   );
 });
+/* =========================================
+   ENVIRONMENT CHECK (TEMPORARY)
+========================================= */
 
+app.get("/env-check", (req, res) => {
+  res.json({
+    razorpay_key_id: RAZORPAY_KEY_ID,
+    secret_loaded: Boolean(RAZORPAY_KEY_SECRET),
+    secret_length: RAZORPAY_KEY_SECRET.length,
+    key_mode: RAZORPAY_KEY_ID.startsWith("rzp_live_")
+      ? "live"
+      : "test"
+  });
+});
 /* =========================================
    CREATE RAZORPAY ORDER
 ========================================= */
