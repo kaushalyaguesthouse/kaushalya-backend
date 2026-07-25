@@ -90,6 +90,15 @@ const supabase = createClient(
    RAZORPAY
 ========================================= */
 
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID?.trim();
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET?.trim();
+
+console.log("Razorpay credential check:", {
+  keyId: RAZORPAY_KEY_ID,
+  keyIdLength: RAZORPAY_KEY_ID?.length,
+  secretLength: RAZORPAY_KEY_SECRET?.length
+});
+
 const razorpay = new Razorpay({
   key_id: RAZORPAY_KEY_ID,
   key_secret: RAZORPAY_KEY_SECRET
