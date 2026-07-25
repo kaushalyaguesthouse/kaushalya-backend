@@ -400,7 +400,108 @@ app.post("/create-booking", async (req, res) => {
     });
   }
 });
+/* =========================================
+   CREATE REVIEW
+========================================= */
 
+app.post("/create-review", async (req, res) => {
+  try {
+    const {
+      customer_name,
+      customer_email,
+      rating,
+      review
+    } = req.body;
+
+    if (
+      !customer_name ||
+      !customer_email ||
+      !rating ||
+      !review
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "All review fields are required."
+      });
+    }
+
+    const { error } = await supabase
+      .from("reviews")
+      .insert([
+        {
+          customer_name: String(customer_name).trim(),
+          customer_email: String(customer_email).trim().toLowerCase(),
+          rating: Number(rating),
+          review: String(review).trim(),
+          approved: false
+        }
+      ]);
+
+    if (error) {
+      console.error("SUPABASE REVIEW ERROR:", error);
+
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Review submitted successfully."
+    });
+
+  } catch (error) {
+
+    console.error("CREATE REVIEW ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to submit review."
+    });
+
+  }
+});
+/* =========================================
+   GET APPROVED REVIEWS
+========================================= */
+
+app.get("/reviews", async (req, res) => {
+  try {
+
+    const { data, error } = await supabase
+      .from("reviews")
+      .select("*")
+      .eq("approved", true)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+
+      console.error("LOAD REVIEWS ERROR:", error);
+
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+
+    }
+
+    return res.status(200).json({
+      success: true,
+      reviews: data
+    });
+
+  } catch (error) {
+
+    console.error("GET REVIEWS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load reviews."
+    });
+
+  }
+});
 /* =========================================
    ROUTE NOT FOUND
 ========================================= */
