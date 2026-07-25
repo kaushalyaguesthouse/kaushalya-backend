@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
-const { createClient } = require("@supabase/supabase-js");
 const Razorpay = require("razorpay");
+const { createClient } = require("@supabase/supabase-js");
 require("dotenv").config();
 
 const app = express();
@@ -9,88 +9,86 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-
-// SUPABASE CONNECTION
+// =========================
+// SUPABASE
+// =========================
 
 const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+process.env.SUPABASE_URL,
+process.env.SUPABASE_ANON_KEY
 );
 
-
-// RAZORPAY CONNECTION
+// =========================
+// RAZORPAY
+// =========================
 
 const razorpay = new Razorpay({
 
-  key_id: process.env.RAZORPAY_KEY_ID,
+key_id:process.env.RAZORPAY_KEY_ID,
 
-  key_secret: process.env.RAZORPAY_KEY_SECRET
-
-});
-
-
-
-// TEST ROUTE
-
-app.get("/", (req,res)=>{
-
-res.send("Kaushalya Guest House Backend is Running");
+key_secret:process.env.RAZORPAY_KEY_SECRET
 
 });
 
+// =========================
+// HOME
+// =========================
 
+app.get("/",(req,res)=>{
 
+res.send("Kaushalya Guest House Backend Running");
 
-// CREATE RAZORPAY ORDER
+});
 
-app.post("/create-order", async (req,res)=>{
+// =========================
+// CREATE ORDER
+// =========================
 
+app.post("/create-order",async(req,res)=>{
 
 try{
 
+const amount = Number(req.body.amount);
 
-const options = {
+if(!amount){
 
+return res.status(400).json({
 
-amount: req.body.amount * 100,
+success:false,
+
+message:"Invalid Amount"
+
+});
+
+}
+
+const order = await razorpay.orders.create({
+
+amount:Math.round(amount*100),
 
 currency:"INR",
 
 receipt:"KGH_"+Date.now()
 
-
-};
-
-
-
-const order = await razorpay.orders.create(options);
-
-
+});
 
 res.json({
 
 success:true,
 
-order:{
-  
-id:order.id,
+order_id:order.id,
 
 amount:order.amount,
 
 currency:order.currency
 
-
 });
-
-
 
 }
 
 catch(error){
 
-
-console.log("RAZORPAY ORDER ERROR:",error);
-
+console.log(error);
 
 res.status(500).json({
 
@@ -100,86 +98,55 @@ message:error.message
 
 });
 
-
 }
-
 
 });
 
-
-
-
-
-
+// =========================
 // CREATE BOOKING
+// =========================
 
-
-app.post("/create-booking", async(req,res)=>{
-
+app.post("/create-booking",async(req,res)=>{
 
 try{
 
-
 const bookingId="KGH-"+Date.now();
-
-
 
 const booking={
 
-
 booking_id:bookingId,
-
 
 customer_name:req.body.customer_name,
 
-
 phone:req.body.phone,
-
 
 email:req.body.email,
 
-
 room_type:req.body.room_type,
-
 
 check_in:req.body.check_in,
 
-
 check_out:req.body.check_out,
-
 
 adults:req.body.adults || 1,
 
-
 children:req.body.children || 0,
-
 
 payment_type:req.body.payment_type,
 
-
 payment_status:req.body.payment_status || "Pending",
-
 
 razorpay_payment_id:req.body.razorpay_payment_id || null,
 
-
 amount:req.body.amount,
 
-
-booking_status:"Pending",
-
+booking_status:"Confirmed",
 
 refund_status:"N/A",
 
-
-special_request:req.body.special_request
-
-
+special_request:req.body.special_request || ""
 
 };
-
-
-
 
 const {data,error}=await supabase
 
@@ -189,13 +156,7 @@ const {data,error}=await supabase
 
 .select();
 
-
-
 if(error){
-
-
-console.log("SUPABASE ERROR:",error);
-
 
 return res.status(400).json({
 
@@ -205,10 +166,7 @@ message:error.message
 
 });
 
-
 }
-
-
 
 res.json({
 
@@ -218,47 +176,32 @@ booking_id:bookingId,
 
 booking:data
 
-
 });
-
-
 
 }
 
+catch(error){
 
-catch(err){
-
-
-console.log("SERVER ERROR:",err);
-
+console.log(error);
 
 res.status(500).json({
 
 success:false,
 
-message:err.message
+message:error.message
 
 });
-
 
 }
 
-
-
 });
 
-
-
-
+// =========================
 
 const PORT=process.env.PORT || 10000;
 
-
-
 app.listen(PORT,()=>{
 
-
-console.log(`Server running on port ${PORT}`);
-
+console.log("Server Running On Port",PORT);
 
 });
