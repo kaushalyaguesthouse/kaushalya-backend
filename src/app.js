@@ -86,7 +86,25 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       }
       const idempotencyKey = String(req.headers["idempotency-key"] || req.body.idempotency_key || (payment.razorpay_payment_id ? `payment:${payment.razorpay_payment_id}` : "")).slice(0, 100);
       if (!idempotencyKey) return fail(res, 400, "Idempotency-Key header is required for pay-later bookings.");
-      const booking = await db.createBookingAtomic({ ...result.value, booking_id: `KGH-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`, idempotency_key: idempotencyKey, amount: result.value.total_amount, advance_amount: payment.amount_paise ? payment.amount_paise / 100 : 0, payment_status: payment.status === "verified" ? "Verified" : "Pending", razorpay_order_id: payment.razorpay_order_id || null, razorpay_payment_id: payment.razorpay_payment_id || null }, config.rooms[result.value.room_type].inventory);
+      const booking = await db.createBookingAtomic(
+  {
+    ...result.value,
+    booking_id: `KGH-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+    idempotency_key: idempotencyKey,
+    amount: result.value.total_amount,
+    advance_amount: payment.amount_paise
+      ? payment.amount_paise / 100
+      : 0,
+    payment_status:
+      payment.status === "verified" ? "Verified" : "Pending",
+
+    refund_status: "Not Requested",
+
+    razorpay_order_id: payment.razorpay_order_id || null,
+    razorpay_payment_id: payment.razorpay_payment_id || null
+  },
+  config.rooms[result.value.room_type].inventory
+);
       if (!booking) return fail(res, 409, "The selected room is no longer available.");
       if (!booking.email_sent_at && mailer) mailer.sendBooking(booking, config.contact).then(() => db.markEmailSent(booking.id)).catch((error) => logger.error("BOOKING_EMAIL_FAILED", { booking_id: booking.booking_id, message: error.message }));
       return res.status(201).json({ success: true, booking_id: booking.booking_id, booking: [booking] });
