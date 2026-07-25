@@ -4,7 +4,9 @@
   "description": "Backend for Kaushalya Guest House",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check src/app.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.56.0",
