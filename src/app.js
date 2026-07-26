@@ -13,12 +13,19 @@ function createRateLimiter(limit = 120, windowMs = 60000) {
   };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function validateUuid(req, res, next) {
+  if (!UUID_RE.test(String(req.params.id || ""))) return res.status(400).json({ success: false, message: "Invalid ID." });
+  return next();
+}
+
 function createApp({ config, db, razorpay, mailer, logger = console }) {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
   app.use((req, res, next) => { res.set({ "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'" }); next(); });
-  app.use(cors({ origin(origin, callback) { callback(null, !origin || config.origins.includes(origin)); }, methods: ["GET", "POST", "PATCH", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "X-Admin-Key"] }));
+  app.use(cors({ origin(origin, callback) { callback(null, !origin || config.origins.includes(origin)); }, methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "X-Admin-Key"] }));
   app.use(express.json({ limit: "100kb" }));
   app.use(createRateLimiter());
 
@@ -114,15 +121,16 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   app.post("/create-review", async (req, res, next) => { try { const result = validateReview(req.body); if (!result.valid) return fail(res, 422, "Invalid review.", result.errors); await db.createReview(result.value); return res.status(201).json({ success: true, message: "Review submitted successfully." }); } catch (error) { next(error); } });
   app.get("/reviews", async (_req, res, next) => { try { res.json({ success: true, reviews: await db.approvedReviews() }); } catch (error) { next(error); } });
   app.post("/admin/login", createRateLimiter(5, 15 * 60000), (req, res) => {
-    const supplied = String(req.headers["x-admin-key"] || req.body.admin_key || ""); const expected = config.adminBootstrapKey;
+    const supplied = String(req.headers["x-admin-key"] || req.body?.admin_key || "").trim(); const expected = config.adminBootstrapKey;
     if (!expected || supplied.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) return fail(res, 401, "Invalid admin credentials.");
     res.json({ success: true, token: signAdminToken(config.adminSecret), expires_in: 3600 });
   });
   app.get("/admin/bookings", admin, async (req, res, next) => { try { res.json({ success: true, bookings: await db.bookings(req.query) }); } catch (e) { next(e); } });
-  app.get("/admin/bookings/:id", admin, async (req, res, next) => { try { const booking = await db.booking(req.params.id); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
-  app.patch("/admin/bookings/:id/status", admin, async (req, res, next) => { try { if (!["Pending", "Confirmed", "Cancelled", "Completed"].includes(req.body.status)) return fail(res, 422, "Invalid booking status."); res.json({ success: true, booking: await db.updateBooking(req.params.id, req.body.status) }); } catch (e) { next(e); } });
-  app.get("/admin/reviews", admin, async (_req, res, next) => { try { res.json({ success: true, reviews: await db.pendingReviews() }); } catch (e) { next(e); } });
-  app.patch("/admin/reviews/:id", admin, async (req, res, next) => { try { if (!["approved", "rejected"].includes(req.body.status)) return fail(res, 422, "Status must be approved or rejected."); res.json({ success: true, review: await db.moderateReview(req.params.id, req.body.status) }); } catch (e) { next(e); } });
+  app.get("/admin/bookings/:id", admin, validateUuid, async (req, res, next) => { try { const booking = await db.booking(req.params.id); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
+  app.patch("/admin/bookings/:id/status", admin, validateUuid, async (req, res, next) => { try { if (!["Pending", "Confirmed", "Cancelled", "Completed"].includes(req.body?.status)) return fail(res, 422, "Invalid booking status.", { status: "Status must be Pending, Confirmed, Cancelled, or Completed." }); const booking = await db.updateBooking(req.params.id, req.body.status); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
+  app.get("/admin/reviews", admin, async (_req, res, next) => { try { res.json({ success: true, reviews: await db.reviews() }); } catch (e) { next(e); } });
+  app.patch("/admin/reviews/:id", admin, validateUuid, async (req, res, next) => { try { if (!["approved", "rejected"].includes(req.body?.status)) return fail(res, 422, "Status must be approved or rejected.", { status: "Status must be approved or rejected." }); const review = await db.moderateReview(req.params.id, req.body.status); return review ? res.json({ success: true, review }) : fail(res, 404, "Review not found."); } catch (e) { next(e); } });
+  app.delete("/admin/reviews/:id", admin, validateUuid, async (req, res, next) => { try { const review = await db.deleteReview(req.params.id); return review ? res.json({ success: true, message: "Review deleted successfully.", review }) : fail(res, 404, "Review not found."); } catch (e) { next(e); } });
   app.use((_req, res) => fail(res, 404, "Route not found."));
   app.use((error, _req, res, _next) => { logger.error("REQUEST_FAILED", { message: error.message }); return fail(res, 500, "An internal server error occurred."); });
   return app;

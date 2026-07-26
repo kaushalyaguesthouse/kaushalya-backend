@@ -11,7 +11,7 @@ function loadConfig(env = process.env) {
     port: positiveInt(env.PORT, 10000), nodeEnv: clean(env.NODE_ENV || "development"),
     supabaseUrl: clean(env.SUPABASE_URL), supabaseKey: clean(env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY),
     razorpayKeyId: clean(env.RAZORPAY_KEY_ID), razorpaySecret: clean(env.RAZORPAY_KEY_SECRET),
-    adminSecret: clean(env.ADMIN_TOKEN_SECRET), adminBootstrapKey: clean(env.ADMIN_BOOTSTRAP_KEY),
+    adminSecret: clean(env.ADMIN_SESSION_SECRET || env.JWT_SECRET || env.ADMIN_TOKEN_SECRET), adminBootstrapKey: clean(env.ADMIN_BOOTSTRAP_KEY),
     origins: clean(env.ALLOWED_ORIGINS || "https://kaushalyaguesthouse.github.io,http://localhost:3000,http://127.0.0.1:5500").split(",").map((x) => x.trim()),
     rooms, maxStayNights: positiveInt(env.MAX_STAY_NIGHTS, 90), maxGuests: positiveInt(env.MAX_GUESTS_PER_BOOKING, 10),
     paymentMethods: clean(env.PAYMENT_METHODS || "Pay Later,Razorpay").split(",").map((x) => x.trim()),

@@ -3,7 +3,19 @@ const assert = require("node:assert/strict");
 const { createApp } = require("../src/app");
 
 const config = { origins: ["http://localhost:3000"], rooms: { Standard: { price: 1800, inventory: 2 } }, maxStayNights: 90, maxGuests: 10, paymentMethods: ["Pay Later", "Razorpay"], adminSecret: "admin-signing-secret", adminBootstrapKey: "bootstrap-secret", razorpaySecret: "razorpay-secret", razorpayKeyId: "rzp_test_key", contact: {} };
-const db = { health: async () => true, approvedReviews: async () => [{ id: "1", customer_name: "Guest", rating: 5, review: "Excellent stay", created_at: "2026-01-01" }], availability: async () => 1 };
+const bookingId = "123e4567-e89b-12d3-a456-426614174000";
+const reviewId = "123e4567-e89b-12d3-a456-426614174001";
+const db = {
+  health: async () => true,
+  approvedReviews: async () => [{ id: "1", customer_name: "Guest", rating: 5, review: "Excellent stay", created_at: "2026-01-01" }],
+  availability: async () => 1,
+  bookings: async () => [{ id: bookingId }],
+  booking: async (id) => id === bookingId ? { id } : null,
+  updateBooking: async (id, status) => id === bookingId ? { id, booking_status: status } : null,
+  reviews: async () => [{ id: reviewId, status: "pending" }, { id: "other", status: "approved" }],
+  moderateReview: async (id, status) => id === reviewId ? { id, status } : null,
+  deleteReview: async (id) => id === reviewId ? { id } : null
+};
 const razorpay = { orders: { create: async () => ({ id: "order_1", amount: 100, currency: "INR" }) } };
 
 async function withServer(run) {
@@ -21,5 +33,30 @@ test("health, public reviews, validation, and 404 routes smoke test", () => with
 
 test("admin login rejects a bad key and issues a signed token", () => withServer(async (url) => {
   let response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ admin_key: "wrong" }) }); assert.equal(response.status, 401);
-  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ admin_key: "bootstrap-secret" }) }); assert.equal(response.status, 200); assert.match((await response.json()).token, /^[^.]+\.[^.]+$/);
+  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ admin_key: "  bootstrap-secret  " }) }); assert.equal(response.status, 200); assert.match((await response.json()).token, /^[^.]+\.[^.]+$/);
+}));
+
+test("admin resources require auth and support booking and review moderation", () => withServer(async (url) => {
+  let response = await fetch(`${url}/admin/bookings`); assert.equal(response.status, 401);
+  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "x-admin-key": "bootstrap-secret" } });
+  const { token } = await response.json();
+  const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+
+  response = await fetch(`${url}/admin/bookings`, { headers }); assert.equal(response.status, 200); assert.equal((await response.json()).bookings.length, 1);
+  response = await fetch(`${url}/admin/bookings/not-an-id`, { headers }); assert.equal(response.status, 400);
+  response = await fetch(`${url}/admin/bookings/${bookingId}`, { headers }); assert.equal((await response.json()).booking.id, bookingId);
+  response = await fetch(`${url}/admin/bookings/${bookingId}/status`, { method: "PATCH", headers, body: JSON.stringify({ status: "Completed" }) }); assert.equal((await response.json()).booking.booking_status, "Completed");
+  response = await fetch(`${url}/admin/bookings/${bookingId}/status`, { method: "PATCH", headers, body: JSON.stringify({ status: "invalid" }) }); assert.equal(response.status, 422);
+
+  response = await fetch(`${url}/admin/reviews`, { headers }); assert.equal((await response.json()).reviews.length, 2);
+  response = await fetch(`${url}/admin/reviews/${reviewId}`, { method: "PATCH", headers, body: JSON.stringify({ status: "approved" }) }); assert.equal((await response.json()).review.status, "approved");
+  response = await fetch(`${url}/admin/reviews/${reviewId}`, { method: "DELETE", headers }); assert.equal(response.status, 200);
+}));
+
+test("admin login is rate limited", () => withServer(async (url) => {
+  let response;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ admin_key: "wrong" }) });
+  }
+  assert.equal(response.status, 429);
 }));
