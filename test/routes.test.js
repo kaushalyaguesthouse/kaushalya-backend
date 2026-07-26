@@ -19,7 +19,7 @@ const db = {
 const razorpay = { orders: { create: async () => ({ id: "order_1", amount: 100, currency: "INR" }) } };
 
 async function withServer(run) {
-  const server = createApp({ config, db, razorpay, logger: { error() {} } }).listen(0, "127.0.0.1");
+  const server = createApp({ config, db, razorpay, logger: { error() {}, info() {} } }).listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   try { await run(`http://127.0.0.1:${server.address().port}`); } finally { await new Promise((resolve) => server.close(resolve)); }
 }
@@ -33,8 +33,29 @@ test("health, public reviews, validation, and 404 routes smoke test", () => with
 
 test("admin login rejects a bad key and issues a signed token", () => withServer(async (url) => {
   let response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ admin_key: "wrong" }) }); assert.equal(response.status, 401);
-  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ admin_key: "  bootstrap-secret  " }) }); assert.equal(response.status, 200); assert.match((await response.json()).token, /^[^.]+\.[^.]+$/);
+  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bootstrapKey: "  bootstrap-secret  " }) }); assert.equal(response.status, 200); assert.match((await response.json()).token, /^[^.]+\.[^.]+$/);
 }));
+
+test("admin login comparison is case-sensitive and safely rejects different UTF-8 byte lengths", () => withServer(async (url) => {
+  let response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bootstrapKey: "BOOTSTRAP-SECRET" }) });
+  assert.equal(response.status, 401);
+  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bootstrapKey: "बूटस्ट्रैप-सेक्रेट" }) });
+  assert.equal(response.status, 401);
+}));
+
+test("admin login logs secret-safe diagnostics", async () => {
+  const entries = [];
+  const logger = { error() {}, info(event, details) { entries.push({ event, details }); } };
+  const server = createApp({ config, db, razorpay, logger }).listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const url = `http://127.0.0.1:${server.address().port}`;
+    const response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bootstrapKey: "bootstrap-secret" }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(entries, [{ event: "ADMIN_LOGIN_CHECK", details: { bootstrapKeyConfigured: true, requestHasBootstrapKey: true, comparisonSucceeded: true } }]);
+    assert.equal(JSON.stringify(entries).includes("bootstrap-secret"), false);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
 
 test("admin resources require auth and support booking and review moderation", () => withServer(async (url) => {
   let response = await fetch(`${url}/admin/bookings`); assert.equal(response.status, 401);
