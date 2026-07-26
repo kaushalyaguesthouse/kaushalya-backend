@@ -34,3 +34,36 @@ test("005 restores canonical indexes, foreign keys, exclusion safety, and seeds"
   assert.match(sql, /values \('standard'\),\('deluxe'\) on conflict/);
   assert.match(sql, /insert into public\.business_settings\(id\) values\(true\) on conflict/);
 });
+
+test("005 preflights legacy definitions and duplicate values before unique indexes", () => {
+  assert.match(sql, /schema_incompatible: %\.% expected %/);
+  assert.match(sql, /format_type\(a\.atttypid,a\.atttypmod\)/);
+  assert.match(sql, /duplicate_data: %\.% contains duplicate values/);
+  assert.match(sql, /having count\(\*\) > 1/);
+  assert.ok(sql.indexOf("duplicate_data:") < sql.indexOf("create unique index if not exists bookings_booking_id_uidx"));
+  for (const value of ["booking_id", "idempotency_key", "razorpay_payment_id", "razorpay_order_id", "invoice_number"]) assert.match(sql, new RegExp(`'${value}'`), value);
+});
+
+test("005 neither fabricates rooms nor historical stay state and preserves seed rows", () => {
+  assert.doesNotMatch(sql, /insert into public\.rooms/);
+  assert.doesNotMatch(sql, /select id from public\.bookings on conflict \(booking_id\)/);
+  assert.doesNotMatch(sql, /do update/);
+  assert.match(sql, /physical inventory is intentionally not seeded/);
+  assert.match(sql, /legacy stays are intentionally not fabricated/);
+});
+
+test("005 verifies RPC contracts and never replaces functions or triggers", () => {
+  assert.doesNotMatch(sql, /create\s+or\s+replace\s+(?:function|trigger)/);
+  assert.doesNotMatch(sql, /drop\s+trigger/);
+  assert.match(sql, /pg_get_function_result/);
+  assert.match(sql, /prosecdef/);
+  assert.match(sql, /search_path=public/);
+  for (const signature of ["create_booking_atomic(jsonb,integer)", "assign_booking_room(uuid,uuid,text)", "release_booking_room(uuid,text,text)", "check_in_booking(uuid)", "check_out_booking(uuid)", "transition_housekeeping_task(uuid,text)", "generate_booking_invoice(uuid,text)"]) assert.match(sql, new RegExp(signature.replace(/[()]/g, "\\$&")), signature);
+});
+
+test("005 uses the service role architecture for all health resources", () => {
+  assert.match(sql, /revoke all on table public\.%i from public,anon,authenticated/);
+  assert.match(sql, /grant %s on table public\.%i to service_role/);
+  assert.match(sql, /grant usage,select on sequence public\.invoice_number_seq to service_role/);
+  for (const table of healthTables) assert.match(sql, new RegExp(`'${table}'`), table);
+});

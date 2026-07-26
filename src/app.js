@@ -153,6 +153,9 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   app.get("/admin/diagnostics/database", admin, async (_req, res, next) => {
     try { return res.json(await db.databaseDiagnostic()); } catch (error) { return next(error); }
   });
+  app.get("/admin/diagnostics/schema", admin, async (_req, res, next) => {
+    try { return res.json(await db.schemaDiagnostic()); } catch (error) { return next(error); }
+  });
   app.get("/rooms", (_req, res) => res.json({ success: true, rooms: config.rooms }));
   app.post("/quote", (req, res) => {
     const result = validate(req.body);
@@ -216,8 +219,6 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       : 0,
     payment_status:
       payment.status === "verified" ? "Verified" : "Pending",
-
-    refund_status: "Not Requested",
 
     razorpay_order_id: payment.razorpay_order_id || null,
     razorpay_payment_id: payment.razorpay_payment_id || null

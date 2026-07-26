@@ -34,6 +34,33 @@ alter table public.bookings add column if not exists created_at timestamptz defa
 alter table public.bookings add column if not exists updated_at timestamptz default now();
 alter table public.bookings add column if not exists refund_amount numeric(12,2) not null default 0 check (refund_amount >= 0);
 
+-- ADD COLUMN IF NOT EXISTS cannot repair a legacy column. Abort before any
+-- indexes/functions are installed when a backend-facing legacy type is unsafe.
+do $migration$
+declare c record; actual text;
+begin
+  for c in select * from (values
+    ('bookings','id','uuid'),('bookings','booking_id','text'),('bookings','idempotency_key','text'),
+    ('bookings','customer_name','text'),('bookings','phone','text'),('bookings','email','text'),
+    ('bookings','room_type','text'),('bookings','check_in','date'),('bookings','check_out','date'),
+    ('bookings','adults','integer'),('bookings','children','integer'),('bookings','payment_type','text'),
+    ('bookings','payment_status','text'),('bookings','razorpay_order_id','text'),
+    ('bookings','razorpay_payment_id','text'),('bookings','amount','numeric'),
+    ('bookings','advance_amount','numeric'),('bookings','booking_status','text'),
+    ('bookings','special_request','text'),('bookings','nights','integer'),
+    ('bookings','paid_nights','integer'),('bookings','complimentary_nights','integer'),
+    ('bookings','email_sent_at','timestamp with time zone'),('bookings','created_at','timestamp with time zone'),
+    ('bookings','updated_at','timestamp with time zone'),('bookings','refund_amount','numeric')
+  ) v(table_name,column_name,expected_type)
+  loop
+    select format_type(a.atttypid,a.atttypmod) into actual from pg_attribute a
+    where a.attrelid=format('public.%I',c.table_name)::regclass and a.attname=c.column_name and a.attnum>0 and not a.attisdropped;
+    if actual is null or (c.expected_type='numeric' and actual !~ '^numeric(\([0-9]+,[0-9]+\))?$') or (c.expected_type<>'numeric' and actual<>c.expected_type) then
+      raise exception 'SCHEMA_INCOMPATIBLE: %.% expected %, found %. No data was changed; resolve the legacy definition and rerun 005.',c.table_name,c.column_name,c.expected_type,coalesce(actual,'missing');
+    end if;
+  end loop;
+end $migration$;
+
 -- 004 created room_types.  Keep the definition here for databases on which 004
 -- was only partly applied, without replacing the relation or its data.
 create table if not exists public.room_types (
@@ -114,9 +141,14 @@ create table if not exists public.payment_orders (
   amount_paise integer not null check (amount_paise > 0), booking_payload jsonb not null,
   status text not null default 'created', verified_at timestamptz, created_at timestamptz not null default now()
 );
+alter table public.payment_orders add column if not exists id uuid default gen_random_uuid();
+alter table public.payment_orders add column if not exists idempotency_key text;
+alter table public.payment_orders add column if not exists razorpay_order_id text;
+alter table public.payment_orders add column if not exists razorpay_payment_id text;
 alter table public.payment_orders add column if not exists razorpay_signature text;
 alter table public.payment_orders add column if not exists amount_paise integer;
 alter table public.payment_orders add column if not exists booking_payload jsonb;
+alter table public.payment_orders add column if not exists status text default 'created';
 alter table public.payment_orders add column if not exists verified_at timestamptz;
 alter table public.payment_orders add column if not exists created_at timestamptz default now();
 create table if not exists public.reviews (
@@ -124,15 +156,97 @@ create table if not exists public.reviews (
   rating smallint not null check (rating between 1 and 5), review text not null,
   status text not null default 'pending', created_at timestamptz not null default now(), moderated_at timestamptz
 );
+alter table public.reviews add column if not exists id uuid default gen_random_uuid();
+alter table public.reviews add column if not exists customer_name text;
+alter table public.reviews add column if not exists customer_email text;
+alter table public.reviews add column if not exists rating smallint;
+alter table public.reviews add column if not exists review text;
+alter table public.reviews add column if not exists status text default 'pending';
+alter table public.reviews add column if not exists created_at timestamptz default now();
 alter table public.reviews add column if not exists moderated_at timestamptz;
 
+-- Validate legacy payment/review definitions after additive columns and before constraints/indexes.
+do $migration$
+declare c record; actual text;
+begin
+  for c in select * from (values
+    ('payment_orders','id','uuid'),('payment_orders','idempotency_key','text'),
+    ('payment_orders','razorpay_order_id','text'),('payment_orders','razorpay_payment_id','text'),
+    ('payment_orders','razorpay_signature','text'),('payment_orders','amount_paise','integer'),
+    ('payment_orders','booking_payload','jsonb'),('payment_orders','status','text'),
+    ('payment_orders','verified_at','timestamp with time zone'),('payment_orders','created_at','timestamp with time zone'),
+    ('reviews','id','uuid'),('reviews','customer_name','text'),('reviews','customer_email','text'),
+    ('reviews','rating','smallint'),('reviews','review','text'),('reviews','status','text'),
+    ('reviews','created_at','timestamp with time zone'),('reviews','moderated_at','timestamp with time zone')
+  ) v(table_name,column_name,expected_type)
+  loop
+    select format_type(a.atttypid,a.atttypmod) into actual from pg_attribute a
+    where a.attrelid=format('public.%I',c.table_name)::regclass and a.attname=c.column_name and a.attnum>0 and not a.attisdropped;
+    if actual is distinct from c.expected_type then
+      raise exception 'SCHEMA_INCOMPATIBLE: %.% expected %, found %. No data was changed; resolve the legacy definition and rerun 005.',c.table_name,c.column_name,c.expected_type,coalesce(actual,'missing');
+    end if;
+  end loop;
+end $migration$;
+
+-- Required legacy write fields must retain the canonical nullability/default contract.
+-- A partially initialized table is stopped for operator review instead of backfilling unknown values.
+do $migration$
+declare c record; is_not_null boolean; default_expression text; invalid_values text;
+begin
+  for c in select * from (values
+    ('payment_orders','id',true,null),('payment_orders','idempotency_key',true,null),
+    ('payment_orders','razorpay_order_id',true,null),('payment_orders','amount_paise',true,null),
+    ('payment_orders','booking_payload',true,null),('payment_orders','status',true,'''created'''),
+    ('payment_orders','created_at',true,'now()'),('reviews','id',true,null),
+    ('reviews','customer_name',true,null),('reviews','customer_email',true,null),
+    ('reviews','rating',true,null),('reviews','review',true,null),
+    ('reviews','status',true,'''pending'''),('reviews','created_at',true,'now()'),
+    ('bookings','refund_amount',true,'0')
+  ) v(table_name,column_name,expected_not_null,expected_default)
+  loop
+    select a.attnotnull,pg_get_expr(d.adbin,d.adrelid) into is_not_null,default_expression
+    from pg_attribute a left join pg_attrdef d on d.adrelid=a.attrelid and d.adnum=a.attnum
+    where a.attrelid=format('public.%I',c.table_name)::regclass and a.attname=c.column_name and a.attnum>0 and not a.attisdropped;
+    if is_not_null is distinct from c.expected_not_null or
+       (c.expected_default is not null and coalesce(default_expression,'') not like '%'||c.expected_default||'%') then
+      raise exception 'SCHEMA_INCOMPATIBLE: %.% has incompatible nullability/default (not_null=%, default=%). Review legacy rows and repair explicitly; 005 did not backfill them.',c.table_name,c.column_name,is_not_null,default_expression;
+    end if;
+  end loop;
+  select string_agg(distinct status, ', ' order by status) into invalid_values from public.payment_orders where status not in ('created','verified','failed');
+  if invalid_values is not null then raise exception 'SCHEMA_INCOMPATIBLE: payment_orders.status has unsupported values: %. Resolve manually.',invalid_values; end if;
+  select string_agg(distinct status, ', ' order by status) into invalid_values from public.reviews where status not in ('pending','approved','rejected');
+  if invalid_values is not null then raise exception 'SCHEMA_INCOMPATIBLE: reviews.status has unsupported values: %. Resolve manually.',invalid_values; end if;
+end $migration$;
+
 insert into public.room_types(name) values ('Standard'),('Deluxe') on conflict (name) do nothing;
-insert into public.rooms(room_number,room_type_id,floor)
-select seed.room_number, rt.id, seed.floor
-from (values ('101','Standard',1),('102','Standard',1),('201','Deluxe',2),('202','Deluxe',2)) seed(room_number,type_name,floor)
-join public.room_types rt on rt.name=seed.type_name on conflict (room_number) do nothing;
+-- Physical inventory is intentionally not seeded. Configure real rooms through the admin workflow.
 insert into public.business_settings(id) values(true) on conflict (id) do nothing;
-insert into public.booking_stays(booking_id) select id from public.bookings on conflict (booking_id) do nothing;
+-- Legacy stays are intentionally not fabricated. The insert trigger and check-in RPC create rows for new/active workflows.
+
+-- Preflight every unique index against legacy rows. Never deduplicate payment or guest data automatically.
+do $migration$
+declare spec record; duplicate_values text;
+begin
+  for spec in select * from (values
+    ('bookings','booking_id','booking_id is not null'),
+    ('bookings','idempotency_key','idempotency_key is not null'),
+    ('bookings','razorpay_payment_id','razorpay_payment_id is not null'),
+    ('payment_orders','idempotency_key','idempotency_key is not null'),
+    ('payment_orders','razorpay_order_id','razorpay_order_id is not null'),
+    ('payment_orders','razorpay_payment_id','razorpay_payment_id is not null'),
+    ('invoices','booking_id','booking_id is not null'),
+    ('invoices','invoice_number','invoice_number is not null')
+  ) v(table_name,column_name,predicate)
+  loop
+    execute format('select string_agg(quote_nullable(value), '', '' order by value) from (select %1$I::text value from public.%2$I where %3$s group by %1$I having count(*) > 1 limit 20) duplicates',spec.column_name,spec.table_name,spec.predicate) into duplicate_values;
+    if duplicate_values is not null then
+      raise exception 'DUPLICATE_DATA: %.% contains duplicate values: %. Resolve these records manually; 005 did not delete or rewrite them.',spec.table_name,spec.column_name,duplicate_values;
+    end if;
+  end loop;
+  select string_agg(booking_id::text, ', ' order by booking_id::text) into duplicate_values
+  from (select booking_id from public.booking_room_assignments where assignment_status='active' group by booking_id having count(*)>1 limit 20) d;
+  if duplicate_values is not null then raise exception 'DUPLICATE_DATA: booking_room_assignments has multiple active rows for booking_id values: %. Resolve manually; 005 changed no rows.',duplicate_values; end if;
+end $migration$;
 
 create unique index if not exists bookings_booking_id_uidx on public.bookings(booking_id);
 create unique index if not exists bookings_idempotency_uidx on public.bookings(idempotency_key);
@@ -277,6 +391,29 @@ begin
   end if;
 end $migration$;
 
+-- A same-signature legacy routine is not automatically trusted. Verify the security/return contract
+-- expected by PostgREST; abort rather than replacing an unknown production routine.
+do $migration$
+declare f record; p regprocedure;
+begin
+  for f in select * from (values
+    ('create_booking_atomic(jsonb,integer)','SETOF bookings'),
+    ('assign_booking_room(uuid,uuid,text)','jsonb'),('release_booking_room(uuid,text,text)','jsonb'),
+    ('check_in_booking(uuid)','jsonb'),('check_out_booking(uuid)','jsonb'),
+    ('transition_housekeeping_task(uuid,text)','jsonb'),('generate_booking_invoice(uuid,text)','jsonb')
+  ) v(signature,expected_result)
+  loop
+    p=to_regprocedure('public.'||f.signature);
+    if p is null then raise exception 'SCHEMA_INCOMPATIBLE: missing RPC public.%',f.signature; end if;
+    if not (select prosecdef and coalesce(proconfig,'{}') @> array['search_path=public'] from pg_proc where oid=p) then
+      raise exception 'SCHEMA_INCOMPATIBLE: RPC public.% must be SECURITY DEFINER with fixed search_path=public; it was not replaced.',f.signature;
+    end if;
+    if pg_get_function_result(p) <> f.expected_result then
+      raise exception 'SCHEMA_INCOMPATIBLE: RPC public.% expected return %, found %. It was not replaced.',f.signature,f.expected_result,pg_get_function_result(p);
+    end if;
+  end loop;
+end $migration$;
+
 -- No browser-facing policies are needed: all database access is through the
 -- Render backend's service role. Reassert least privilege for all 11 resources.
 do $migration$
@@ -289,6 +426,7 @@ begin
     execute format('grant %s on table public.%I to service_role',privileges,table_name);
   end loop;
 end $migration$;
+revoke all on function public.set_updated_at(),public.set_booking_room_allocation_range(),public.create_booking_stay() from public,anon,authenticated;
 revoke all on function public.create_booking_atomic(jsonb,integer),public.assign_booking_room(uuid,uuid,text),public.release_booking_room(uuid,text,text),public.check_in_booking(uuid),public.check_out_booking(uuid),public.transition_housekeeping_task(uuid,text),public.generate_booking_invoice(uuid,text) from public,anon,authenticated;
 grant execute on function public.create_booking_atomic(jsonb,integer),public.assign_booking_room(uuid,uuid,text),public.release_booking_room(uuid,text,text),public.check_in_booking(uuid),public.check_out_booking(uuid),public.transition_housekeeping_task(uuid,text),public.generate_booking_invoice(uuid,text) to service_role;
 grant usage,select on sequence public.invoice_number_seq to service_role;
