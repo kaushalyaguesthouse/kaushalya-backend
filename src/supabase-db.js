@@ -53,17 +53,42 @@ function publicHealthDiagnostic(error, result = {}) {
   };
 }
 
-function createSupabaseDb(supabase, logger = console) {
+const REQUIRED_SCHEMA = Object.freeze({
+  bookings: "id,booking_id,customer_name,phone,email,room_type,check_in,check_out,booking_status,payment_status,amount,advance_amount,refund_amount,created_at",
+  payment_orders: "id,idempotency_key,razorpay_order_id,razorpay_payment_id,status",
+  reviews: "id,customer_name,customer_email,rating,review,status,created_at",
+  room_types: "id,name,is_active", rooms: "id,room_number,room_type_id,floor,operational_status,housekeeping_status,is_active",
+  booking_room_assignments: "id,booking_id,room_id,allocation_range,assignment_status",
+  booking_stays: "booking_id,stay_status,checked_in_at,checked_out_at",
+  housekeeping_tasks: "id,booking_id,room_id,task_type,status",
+  invoices: "id,invoice_number,booking_id,issued_at,grand_total", business_settings: "id,business_name,gst_percent,currency,timezone",
+  audit_logs: "id,user_name,action,entity,created_at"
+});
+
+async function postgrestConnectivityProbe(url, key, fetchImpl = globalThis.fetch) {
+  try {
+    const response = await fetchImpl(`${url}/rest/v1/`, { method: "GET", headers: { apikey: key, authorization: `Bearer ${key}`, accept: "application/openapi+json" }, signal: AbortSignal.timeout(10000) });
+    if (response.ok) return publicHealthDiagnostic(null, { status: response.status });
+    let error;
+    try { error = await response.json(); } catch { error = { message: `Supabase returned HTTP ${response.status}.` }; }
+    return publicHealthDiagnostic(error, { status: response.status });
+  } catch (error) { return publicHealthDiagnostic(error); }
+}
+
+function createSupabaseDb(supabase, logger = console, connection = {}) {
   const databaseDiagnostic = async () => {
-    try {
-      const result = await supabase.from("bookings").select("id").limit(1);
-      return publicHealthDiagnostic(result.error, result);
-    } catch (error) {
-      return publicHealthDiagnostic(error);
+    return postgrestConnectivityProbe(connection.url, connection.key, connection.fetch);
+  };
+  const schemaDiagnostic = async () => {
+    const failures = [];
+    for (const [resource, columns] of Object.entries(REQUIRED_SCHEMA)) {
+      try { const result = await supabase.from(resource).select(columns).limit(0); if (result.error) failures.push({ resource, ...publicHealthDiagnostic(result.error, result) }); }
+      catch (error) { failures.push({ resource, ...publicHealthDiagnostic(error) }); }
     }
+    return { ready: failures.length === 0, checked: Object.keys(REQUIRED_SCHEMA).length, failures };
   };
   return {
-    databaseDiagnostic,
+    databaseDiagnostic, schemaDiagnostic,
     async health() {
       // Both health and the authenticated diagnostic endpoint execute this same
       // minimal GET query. Log synchronously before reporting an unhealthy DB.
@@ -188,4 +213,4 @@ function createSupabaseDb(supabase, logger = console) {
     }
   };
 }
-module.exports = { classifyHealthFailure, createSupabaseDb, healthDiagnostic, publicHealthDiagnostic, safeDiagnostic };
+module.exports = { REQUIRED_SCHEMA, classifyHealthFailure, createSupabaseDb, healthDiagnostic, postgrestConnectivityProbe, publicHealthDiagnostic, safeDiagnostic };

@@ -26,3 +26,11 @@ Declare an incident owner, stop writes, preserve logs, identify the last known-g
 ## Shutdown and monitoring
 
 The process handles `SIGTERM`/`SIGINT`, stops accepting traffic, drains HTTP requests, removes Supabase channels, and force-closes after ten seconds. Alert on 5xx rates, repeated authentication failures, payment verification errors, database health failures, memory growth, and shutdowns. Logs are newline-delimited JSON and intentionally omit request bodies and credentials.
+
+## Production self-diagnostic and health semantics
+
+Run `npm run audit:production` locally with production-equivalent environment variables or from **Render Dashboard → Service → Shell**. It never prints key values. It validates configuration, initializes the server-only client, authenticates against the table-independent PostgREST API root, checks every core table/column used by the adapter, and verifies health behavior. A non-zero exit identifies a sanitized configuration, connectivity, authorization, or schema category.
+
+`/health` and `/health/database` report transport/authentication connectivity only. `/health/schema` separately reports whether application tables and queried columns are ready; an empty table is ready, while a missing relation/column is not. `/health/application` deliberately performs no database call. The detailed database diagnostic remains protected at `/admin/diagnostics/database`.
+
+Render must set `NODE_ENV=production`, `SUPABASE_URL=https://<project-ref>.supabase.co`, `SUPABASE_SERVICE_ROLE_KEY=<service-role-secret>`, `RAZORPAY_KEY_ID=<provider-key-id>`, `RAZORPAY_KEY_SECRET=<provider-secret>`, `ADMIN_SESSION_SECRET=<at-least-32-random-characters>`, `ADMIN_BOOTSTRAP_KEY=<independent-random-secret>`, and `ALLOWED_ORIGINS=https://kaushalyaguesthouse.github.io`. `SUPABASE_ANON_KEY` is optional and is never selected when the service-role key exists. Do not quote values in Render; accidental surrounding whitespace or matching quote pairs are normalized.

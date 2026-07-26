@@ -22,4 +22,12 @@ test("Supabase configuration uses the service role environment variables", () =>
 
   assert.equal(config.supabaseUrl, "https://project.supabase.co");
   assert.equal(config.supabaseKey, "service-role-key");
+  assert.equal(config.supabaseKeySource, "service_role");
+});
+
+test("configuration normalizes only matching surrounding quotes and never lets anon override service role", () => {
+  const config = loadConfig({ SUPABASE_URL: '  "https://project.supabase.co"  ', SUPABASE_SERVICE_ROLE_KEY: " ' service ' ", SUPABASE_ANON_KEY: "anon" });
+  assert.equal(config.supabaseUrl, "https://project.supabase.co"); assert.equal(config.supabaseKey, "service");
+  assert.equal(loadConfig({ SUPABASE_SERVICE_ROLE_KEY: "", SUPABASE_ANON_KEY: " anon " }).supabaseKeySource, "anon");
+  assert.equal(loadConfig({ SUPABASE_SERVICE_ROLE_KEY: "'unmatched" }).supabaseKey, "'unmatched");
 });
