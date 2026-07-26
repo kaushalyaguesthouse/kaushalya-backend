@@ -32,3 +32,24 @@ test("room assignment migration preserves history and enforces one active assign
   assert.match(migration, /create or replace function public\.release_booking_room/);
   assert.doesNotMatch(migration, /alter table public\.bookings add column if not exists room_id/);
 });
+
+test("room foundation and assignment phases retain their constraints, indexes, and RPC privacy", () => {
+  for (const constraint of [
+    /room_type_id uuid not null references public\.room_types\(id\).*delete restrict/,
+    /room_number text not null unique/,
+    /check \(char_length\(trim\(room_number\)\) between 1 and 20\)/,
+    /check \(assignment_status in \('active','released'\)\)/,
+    /check \(\(assignment_status = 'active'.*assignment_status = 'released'/
+  ]) assert.match(migration, constraint);
+
+  for (const index of [
+    /create index if not exists rooms_room_type_idx/,
+    /create index if not exists rooms_status_idx/,
+    /create unique index if not exists booking_room_assignments_one_active_idx/,
+    /create index if not exists booking_room_assignments_booking_history_idx/,
+    /create index if not exists booking_room_assignments_room_idx/
+  ]) assert.match(migration, index);
+
+  assert.match(migration, /revoke all on function public\.assign_booking_room\(uuid,uuid,text\), public\.release_booking_room\(uuid,text,text\) from public, anon, authenticated/);
+  assert.match(migration, /grant execute on function public\.assign_booking_room\(uuid,uuid,text\), public\.release_booking_room\(uuid,text,text\) to service_role/);
+});
