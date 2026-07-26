@@ -28,6 +28,18 @@ function createSupabaseDb(supabase) {
       if (result.error) throw new Error(result.error.message);
       return { items: result.data, total: result.count || 0 };
     },
+    async rooms(filters) {
+      const offset = (filters.page - 1) * filters.limit;
+      let q = supabase.from("rooms").select("id,room_number,floor,operational_status,housekeeping_status,notes,is_active,created_at,updated_at,room_types!inner(name)", { count: "exact" }).order("room_number", { ascending: true }).range(offset, offset + filters.limit - 1);
+      if (filters.room_type) q = q.eq("room_types.name", filters.room_type);
+      if (filters.operational_status) q = q.eq("operational_status", filters.operational_status);
+      if (filters.housekeeping_status) q = q.eq("housekeeping_status", filters.housekeeping_status);
+      if (filters.is_active) q = q.eq("is_active", filters.is_active === "true");
+      const result = await q;
+      if (result.error) throw new Error(result.error.message);
+      return { items: result.data, total: result.count || 0 };
+    },
+    async roomStatus() { return assert(await supabase.from("rooms").select("id,room_number,floor,operational_status,housekeeping_status,notes,is_active,created_at,updated_at,room_types!inner(name)").order("room_number", { ascending: true })); },
     async adminAvailability(start, end, roomType) { const exclusiveEnd = new Date(`${end}T00:00:00.000Z`); exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1); let q = supabase.from("bookings").select("id,booking_id,room_type,check_in,check_out,booking_status").lt("check_in", exclusiveEnd.toISOString().slice(0, 10)).gt("check_out", start).order("check_in", { ascending: true }); if (roomType) q = q.eq("room_type", roomType); return assert(await q); },
     async analyticsBookings() { return assert(await supabase.from("bookings").select("room_type,check_in,check_out,adults,children,booking_status,payment_status,amount,advance_amount,created_at")); },
     async booking(id) { return assert(await supabase.from("bookings").select("*").eq("id", id).maybeSingle()); },
