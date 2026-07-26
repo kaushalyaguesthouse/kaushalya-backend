@@ -6,11 +6,15 @@ const { verifyAdminToken } = require("../src/core");
 const config = { origins: ["http://localhost:3000"], rooms: { Standard: { price: 1800, inventory: 2 } }, maxStayNights: 90, maxGuests: 10, paymentMethods: ["Pay Later", "Razorpay"], adminSecret: "admin-signing-secret", adminBootstrapKey: "bootstrap-secret", razorpaySecret: "razorpay-secret", razorpayKeyId: "rzp_test_key", contact: {} };
 const bookingId = "123e4567-e89b-12d3-a456-426614174000";
 const reviewId = "123e4567-e89b-12d3-a456-426614174001";
+let receivedBookingFilters;
 const db = {
   health: async () => true,
   approvedReviews: async () => [{ id: "1", customer_name: "Guest", rating: 5, review: "Excellent stay", created_at: "2026-01-01" }],
   availability: async () => 1,
-  bookings: async () => [{ id: bookingId }],
+  bookings: async (filters) => {
+    receivedBookingFilters = filters;
+    return { items: [{ id: bookingId, booking_id: "KGH-1", customer_name: "Guest", phone: "9999999999", special_request: "private", razorpay_payment_id: "pay_private" }], total: 51 };
+  },
   adminAvailability: async () => [{ id: bookingId, booking_id: "KGH-1", room_type: "Standard", check_in: "2026-08-01", check_out: "2026-08-03", booking_status: "Confirmed", customer_name: "Must not leak" }],
   booking: async (id) => id === bookingId ? { id } : null,
   updateBooking: async (id, status) => id === bookingId ? { id, booking_status: status } : null,
@@ -81,6 +85,26 @@ test("admin resources require auth and support booking and review moderation", (
   response = await fetch(`${url}/admin/reviews`, { headers }); assert.equal((await response.json()).reviews.length, 2);
   response = await fetch(`${url}/admin/reviews/${reviewId}`, { method: "PATCH", headers, body: JSON.stringify({ status: "approved" }) }); assert.equal((await response.json()).review.status, "approved");
   response = await fetch(`${url}/admin/reviews/${reviewId}`, { method: "DELETE", headers }); assert.equal(response.status, 200);
+}));
+
+test("admin bookings validates, filters, paginates, and projects the listing", () => withServer(async (url) => {
+  let response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "x-admin-key": "bootstrap-secret" } });
+  const { accessToken } = await response.json();
+  const headers = { authorization: `Bearer ${accessToken}` };
+  for (const query of ["page=0", "limit=101", "limit=2.5", "status=Unknown", "room_type=Unknown", "check_in_from=2026-02-30", "check_in_from=2026-08-03&check_in_to=2026-08-01"]) {
+    response = await fetch(`${url}/admin/bookings?${query}`, { headers });
+    assert.equal(response.status, 422, query);
+  }
+
+  response = await fetch(`${url}/admin/bookings?search=guest&status=Confirmed&room_type=Standard&check_in_from=2026-08-01&check_in_to=2026-08-03&page=2&limit=25`, { headers });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(receivedBookingFilters, { search: "guest", status: "Confirmed", room_type: "Standard", check_in_from: "2026-08-01", check_in_to: "2026-08-03", page: 2, limit: 25 });
+  assert.deepEqual(body.pagination, { page: 2, limit: 25, total: 51, total_pages: 3 });
+  assert.deepEqual(body.filters, { search: "guest", status: "Confirmed", room_type: "Standard", check_in_from: "2026-08-01", check_in_to: "2026-08-03" });
+  assert.deepEqual(body.bookings, body.items);
+  assert.deepEqual(Object.keys(body.items[0]).sort(), ["booking_id", "customer_name", "id", "phone"]);
+  assert.equal(JSON.stringify(body).includes("private"), false);
 }));
 
 test("admin availability requires auth, validates its range, and returns a privacy-safe inventory report", () => withServer(async (url) => {
