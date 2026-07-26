@@ -121,8 +121,18 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   app.post("/create-review", async (req, res, next) => { try { const result = validateReview(req.body); if (!result.valid) return fail(res, 422, "Invalid review.", result.errors); await db.createReview(result.value); return res.status(201).json({ success: true, message: "Review submitted successfully." }); } catch (error) { next(error); } });
   app.get("/reviews", async (_req, res, next) => { try { res.json({ success: true, reviews: await db.approvedReviews() }); } catch (error) { next(error); } });
   app.post("/admin/login", createRateLimiter(5, 15 * 60000), (req, res) => {
-    const supplied = String(req.headers["x-admin-key"] || req.body?.admin_key || "").trim(); const expected = config.adminBootstrapKey;
-    if (!expected || supplied.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) return fail(res, 401, "Invalid admin credentials.");
+    const requestHasBootstrapKey = typeof req.body?.bootstrapKey === "string";
+    const supplied = String(req.headers["x-admin-key"] || req.body?.bootstrapKey || req.body?.admin_key || "").trim();
+    const expected = String(config.adminBootstrapKey || "").trim();
+    const suppliedBytes = Buffer.from(supplied, "utf8");
+    const expectedBytes = Buffer.from(expected, "utf8");
+    const comparisonSucceeded = expectedBytes.length > 0 && suppliedBytes.length === expectedBytes.length && crypto.timingSafeEqual(suppliedBytes, expectedBytes);
+    logger.info?.("ADMIN_LOGIN_CHECK", {
+      bootstrapKeyConfigured: expectedBytes.length > 0,
+      requestHasBootstrapKey,
+      comparisonSucceeded
+    });
+    if (!comparisonSucceeded) return fail(res, 401, "Invalid admin credentials.");
     res.json({ success: true, token: signAdminToken(config.adminSecret), expires_in: 3600 });
   });
   app.get("/admin/bookings", admin, async (req, res, next) => { try { res.json({ success: true, bookings: await db.bookings(req.query) }); } catch (e) { next(e); } });
