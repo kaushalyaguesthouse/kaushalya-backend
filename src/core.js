@@ -77,6 +77,36 @@ function overlaps(existingStart, existingEnd, requestedStart, requestedEnd) {
   return existingStart < requestedEnd && existingEnd > requestedStart;
 }
 
+function validateAvailabilityQuery(query) {
+  const errors = {};
+  const start = parseDate(query.start_date);
+  const end = parseDate(query.end_date);
+  if (!start) errors.start_date = "start_date must be a valid YYYY-MM-DD date.";
+  if (!end) errors.end_date = "end_date must be a valid YYYY-MM-DD date.";
+  if (start && end && start > end) errors.date_range = "start_date must be on or before end_date.";
+  if (start && end && start <= end && Math.round((end - start) / DAY_MS) + 1 > 366) errors.date_range = "Date range cannot exceed 366 days.";
+  return { valid: Object.keys(errors).length === 0, errors };
+}
+
+function createAvailabilityReport(bookings, rooms, startDate, endDate, roomType, generatedAt = new Date()) {
+  const roomTypes = roomType ? [roomType] : Object.keys(rooms);
+  const days = [];
+  for (let date = parseDate(startDate); date <= parseDate(endDate); date = new Date(date.getTime() + DAY_MS)) {
+    const dateString = date.toISOString().slice(0, 10);
+    for (const type of roomTypes) {
+      const blocked = bookings.filter((booking) => booking.room_type === type && ["Pending", "Confirmed"].includes(booking.booking_status) && booking.check_in <= dateString && booking.check_out > dateString).length;
+      days.push({ date: dateString, room_type: type, inventory: rooms[type].inventory, blocked, available: Math.max(0, rooms[type].inventory - blocked) });
+    }
+  }
+  return {
+    range: { start_date: startDate, end_date: endDate, room_type: roomType || null },
+    generated_at: generatedAt.toISOString(),
+    blocking_statuses: ["Pending", "Confirmed"],
+    days,
+    bookings: bookings.map(({ id, booking_id, room_type, check_in, check_out, booking_status }) => ({ id, booking_id, room_type, check_in, check_out, booking_status }))
+  };
+}
+
 function signAdminToken(secret, ttlSeconds = 3600, now = Date.now()) {
   const payload = Buffer.from(JSON.stringify({ role: "admin", exp: Math.floor(now / 1000) + ttlSeconds })).toString("base64url");
   const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
@@ -91,4 +121,4 @@ function verifyAdminToken(token, secret, now = Date.now()) {
   try { const decoded = JSON.parse(Buffer.from(payload, "base64url")); return decoded.role === "admin" && decoded.exp > now / 1000; } catch { return false; }
 }
 
-module.exports = { calculatePrice, nightsBetween, overlaps, signAdminToken, validateBooking, validateReview, verifyAdminToken, verifySignature };
+module.exports = { calculatePrice, createAvailabilityReport, nightsBetween, overlaps, signAdminToken, validateAvailabilityQuery, validateBooking, validateReview, verifyAdminToken, verifySignature };

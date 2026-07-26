@@ -11,6 +11,7 @@ const db = {
   approvedReviews: async () => [{ id: "1", customer_name: "Guest", rating: 5, review: "Excellent stay", created_at: "2026-01-01" }],
   availability: async () => 1,
   bookings: async () => [{ id: bookingId }],
+  adminAvailability: async () => [{ id: bookingId, booking_id: "KGH-1", room_type: "Standard", check_in: "2026-08-01", check_out: "2026-08-03", booking_status: "Confirmed", customer_name: "Must not leak" }],
   booking: async (id) => id === bookingId ? { id } : null,
   updateBooking: async (id, status) => id === bookingId ? { id, booking_status: status } : null,
   reviews: async () => [{ id: reviewId, status: "pending" }, { id: "other", status: "approved" }],
@@ -80,6 +81,26 @@ test("admin resources require auth and support booking and review moderation", (
   response = await fetch(`${url}/admin/reviews`, { headers }); assert.equal((await response.json()).reviews.length, 2);
   response = await fetch(`${url}/admin/reviews/${reviewId}`, { method: "PATCH", headers, body: JSON.stringify({ status: "approved" }) }); assert.equal((await response.json()).review.status, "approved");
   response = await fetch(`${url}/admin/reviews/${reviewId}`, { method: "DELETE", headers }); assert.equal(response.status, 200);
+}));
+
+test("admin availability requires auth, validates its range, and returns a privacy-safe inventory report", () => withServer(async (url) => {
+  let response = await fetch(`${url}/admin/availability?start_date=2026-08-01&end_date=2026-08-03`);
+  assert.equal(response.status, 401);
+  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "x-admin-key": "bootstrap-secret" } });
+  const { accessToken } = await response.json();
+  const headers = { authorization: `Bearer ${accessToken}` };
+  for (const query of ["start_date=2026-08-03&end_date=2026-08-01", "start_date=2026-08-01&end_date=2027-08-02", "start_date=2026-02-30&end_date=2026-03-01", "start_date=2026-08-01&end_date=2026-08-03&room_type=Unknown"]) {
+    response = await fetch(`${url}/admin/availability?${query}`, { headers }); assert.equal(response.status, 422);
+  }
+  response = await fetch(`${url}/admin/availability?start_date=2026-08-01&end_date=2026-08-03&room_type=Standard`, { headers });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.range, { start_date: "2026-08-01", end_date: "2026-08-03", room_type: "Standard" });
+  assert.deepEqual(body.blocking_statuses, ["Pending", "Confirmed"]);
+  assert.deepEqual(body.days.map(({ blocked, available }) => ({ blocked, available })), [{ blocked: 1, available: 1 }, { blocked: 1, available: 1 }, { blocked: 0, available: 2 }]);
+  assert.match(body.generated_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(Object.keys(body.bookings[0]).sort(), ["booking_id", "booking_status", "check_in", "check_out", "id", "room_type"]);
+  assert.equal(JSON.stringify(body).includes("Must not leak"), false);
 }));
 
 test("admin login is rate limited", () => withServer(async (url) => {
