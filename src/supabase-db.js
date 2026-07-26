@@ -5,7 +5,40 @@ function allocationDates(range) {
   return match ? { from: match[1], until: match[2] } : { from: null, until: null };
 }
 
-function createSupabaseDb(supabase) {
+function safeDiagnostic(value) {
+  if (value == null) return null;
+  return String(value)
+    .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(/([?&](?:apikey|key|token|secret|signature)=)[^&\s]+/gi, "$1[REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]");
+}
+
+function classifyHealthFailure(error, status) {
+  const code = String(error?.code || error?.cause?.code || "").toUpperCase();
+  const message = `${error?.message || ""} ${error?.details || ""}`.toLowerCase();
+  if (status === 401 || ["PGRST301", "PGRST302"].includes(code) || /invalid (?:api )?key|invalid jwt|jwt expired|unauthorized/.test(message)) return "invalid_credentials";
+  if (/row.level security|rls/.test(message)) return "rls";
+  if (code === "42P01" || code === "PGRST205" || /relation .* does not exist|table .*not found|schema cache/.test(message)) return "missing_table";
+  if (code === "42501" || status === 403 || /permission denied|insufficient privilege/.test(message)) return "permission_denied";
+  if (["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"].includes(code) || /fetch failed|network|dns|socket|timed? ?out/.test(message)) return "network_error";
+  if (status != null || error?.code) return "query_error";
+  return "transport_error";
+}
+
+function healthDiagnostic(error, result = {}) {
+  const status = result.status ?? error?.status ?? error?.context?.status ?? error?.cause?.status ?? null;
+  return {
+    failure_type: classifyHealthFailure(error, status),
+    error: {
+      code: safeDiagnostic(error?.code ?? error?.cause?.code),
+      message: safeDiagnostic(error?.message),
+      details: safeDiagnostic(error?.details)
+    },
+    http_status: status
+  };
+}
+
+function createSupabaseDb(supabase, logger = console) {
   return {
     async health() {
       try {
@@ -13,8 +46,13 @@ function createSupabaseDb(supabase) {
         // Supabase gateways reject HEAD even though ordinary REST queries work,
         // which made the readiness check report a false database outage.
         const result = await supabase.from("bookings").select("id").limit(1);
-        return !result.error;
-      } catch {
+        if (result.error) {
+          logger.error?.("DATABASE_HEALTH_CHECK_FAILED", healthDiagnostic(result.error, result));
+          return false;
+        }
+        return true;
+      } catch (error) {
+        logger.error?.("DATABASE_HEALTH_CHECK_FAILED", healthDiagnostic(error));
         return false;
       }
     },
@@ -131,4 +169,4 @@ function createSupabaseDb(supabase) {
     }
   };
 }
-module.exports = { createSupabaseDb };
+module.exports = { classifyHealthFailure, createSupabaseDb, healthDiagnostic };
