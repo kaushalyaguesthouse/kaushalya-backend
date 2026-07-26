@@ -133,7 +133,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       comparisonSucceeded
     });
     if (!comparisonSucceeded) return fail(res, 401, "Invalid admin credentials.");
-    res.json({ success: true, token: signAdminToken(config.adminSecret), expires_in: 3600 });
+    res.json({ success: true, accessToken: signAdminToken(config.adminSecret) });
   });
   app.get("/admin/bookings", admin, async (req, res, next) => { try { res.json({ success: true, bookings: await db.bookings(req.query) }); } catch (e) { next(e); } });
   app.get("/admin/bookings/:id", admin, validateUuid, async (req, res, next) => { try { const booking = await db.booking(req.params.id); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });

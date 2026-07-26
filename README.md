@@ -56,7 +56,7 @@ The frontend must now send full stay/guest data to `/create-order`, retain the r
 
 ### Admin routes
 
-Exchange the bootstrap key with `POST /admin/login`, using the frontend-compatible JSON body `{"bootstrapKey":"..."}`. The legacy `{"admin_key":"..."}` body and `X-Admin-Key` header are also accepted. Surrounding whitespace is trimmed, but the UTF-8 value is otherwise compared exactly and case-sensitively. The response is a one-hour, HMAC-SHA256 signed bearer token. Send it as `Authorization: Bearer <token>` to:
+Exchange the bootstrap key with `POST /admin/login`, using the frontend-compatible JSON body `{"bootstrapKey":"..."}`. The legacy `{"admin_key":"..."}` body and `X-Admin-Key` header are also accepted. Surrounding whitespace is trimmed, but the UTF-8 value is otherwise compared exactly and case-sensitively. A successful response is exactly `{"success":true,"accessToken":"<signed-session-token>"}`. The access token is a one-hour, HMAC-SHA256 signed bearer token generated with `ADMIN_SESSION_SECRET` (or its documented alias). Send it as `Authorization: Bearer <accessToken>` to:
 
 - `GET /admin/bookings?status=Confirmed&limit=100`
 - `GET /admin/bookings/:uuid`
