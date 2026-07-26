@@ -181,17 +181,19 @@ test("admin login is rate limited", () => withServer(async (url) => {
 test("manual room assignment enforces rules, releases history, and stays privacy-safe", () => {
   const roomId = "123e4567-e89b-12d3-a456-426614174010";
   const records = [];
+  let forceOverlap = false;
   let bookingStatus = "Confirmed";
   let room = { id: roomId, room_number: "101", room_type: "Standard", is_active: true, operational_status: "operational" };
   const assignmentDb = {
     ...db,
     async assignRoom(id, requestedRoom) {
+      if (forceOverlap) return { success: false, reason: "room_assignment_conflict" };
       if (bookingStatus === "Cancelled" || bookingStatus === "Completed") return { success: false, reason: "booking_status" };
       if (!room.is_active) return { success: false, reason: "room_inactive" };
       if (room.room_type !== "Standard") return { success: false, reason: "room_type_mismatch" };
       if (records.some((entry) => entry.assignment_status === "active")) return { success: false, reason: "already_assigned" };
       const assigned_at = "2026-07-26T12:00:00.000Z";
-      records.push({ id: `assignment-${records.length}`, booking_id: id, assignment_status: "active", assigned_at, assigned_by: "admin", released_at: null, released_by: null, release_reason: null, room: { id: requestedRoom, room_number: room.room_number, room_type: room.room_type } });
+      records.push({ id: `assignment-${records.length}`, booking_id: id, from: "2026-08-01", until: "2026-08-03", assignment_status: "active", assigned_at, assigned_by: "admin", released_at: null, released_by: null, release_reason: null, room: { id: requestedRoom, room_number: room.room_number, room_type: room.room_type } });
       return { success: true, assigned_at, room: records.at(-1).room };
     },
     async releaseRoom() { const active = records.find((entry) => entry.assignment_status === "active"); if (!active) return { success: false, reason: "not_assigned" }; Object.assign(active, { assignment_status: "released", released_at: "2026-07-26T13:00:00.000Z", released_by: "admin" }); return { success: true }; },
@@ -212,7 +214,11 @@ test("manual room assignment enforces rules, releases history, and stays privacy
       bookingStatus = "Confirmed"; response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: roomId }) }); assert.equal(response.status, 201); assert.equal((await response.json()).assignment_status, "active");
       response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: roomId }) }); assert.equal(response.status, 409);
       response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "DELETE", headers }); assert.deepEqual(await response.json(), { success: true });
+      forceOverlap = true;
+      response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: roomId }) });
+      assert.equal(response.status, 409); assert.deepEqual(await response.json(), { success: false, code: "ROOM_ASSIGNMENT_CONFLICT", message: "The room is already assigned for an overlapping stay." });
       response = await fetch(`${url}/admin/bookings/${bookingId}/assignment`, { headers }); const body = await response.json(); assert.equal(body.current, null); assert.equal(body.history.length, 1); assert.equal(body.history[0].assignment_status, "released");
+      assert.deepEqual({ from: body.history[0].from, until: body.history[0].until }, { from: "2026-08-01", until: "2026-08-03" });
       for (const secret of ["guest@example.com", "9999999999", "pay_private", "razorpay", "special_request"]) assert.equal(JSON.stringify(body).toLowerCase().includes(secret), false);
     } finally { await new Promise((resolve) => server.close(resolve)); }
   })();

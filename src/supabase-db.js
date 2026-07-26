@@ -1,5 +1,10 @@
 function assert(result) { if (result.error) throw new Error(result.error.message); return result.data; }
 
+function allocationDates(range) {
+  const match = /^\[([^,]+),([^\)]+)\)$/.exec(String(range || ""));
+  return match ? { from: match[1], until: match[2] } : { from: null, until: null };
+}
+
 function createSupabaseDb(supabase) {
   return {
     async health() { try { return !((await supabase.from("bookings").select("id", { head: true, count: "exact" }).limit(1)).error); } catch { return false; } },
@@ -47,8 +52,8 @@ function createSupabaseDb(supabase) {
     async roomAssignments(bookingId) {
       const booking = assert(await supabase.from("bookings").select("id").eq("id", bookingId).maybeSingle());
       if (!booking) return null;
-      const rows = assert(await supabase.from("booking_room_assignments").select("id,booking_id,room_id,assignment_status,assigned_at,assigned_by,released_at,released_by,release_reason,created_at,updated_at,rooms!inner(id,room_number,room_types!inner(name))").eq("booking_id", bookingId).order("assigned_at", { ascending: false }));
-      const history = rows.map((row) => ({ id: row.id, booking_id: row.booking_id, assignment_status: row.assignment_status, assigned_at: row.assigned_at, assigned_by: row.assigned_by, released_at: row.released_at, released_by: row.released_by, release_reason: row.release_reason, created_at: row.created_at, updated_at: row.updated_at, room: { id: row.rooms.id, room_number: row.rooms.room_number, room_type: row.rooms.room_types.name } }));
+      const rows = assert(await supabase.from("booking_room_assignments").select("id,booking_id,room_id,allocation_range,assignment_status,assigned_at,assigned_by,released_at,released_by,release_reason,created_at,updated_at,rooms!inner(id,room_number,room_types!inner(name))").eq("booking_id", bookingId).order("assigned_at", { ascending: false }));
+      const history = rows.map((row) => ({ id: row.id, booking_id: row.booking_id, ...allocationDates(row.allocation_range), assignment_status: row.assignment_status, assigned_at: row.assigned_at, assigned_by: row.assigned_by, released_at: row.released_at, released_by: row.released_by, release_reason: row.release_reason, created_at: row.created_at, updated_at: row.updated_at, room: { id: row.rooms.id, room_number: row.rooms.room_number, room_type: row.rooms.room_types.name } }));
       return { current: history.find((row) => row.assignment_status === "active") || null, history };
     },
     async booking(id) { return assert(await supabase.from("bookings").select("*").eq("id", id).maybeSingle()); },
