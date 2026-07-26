@@ -241,3 +241,45 @@ begin
 end $$;
 revoke all on function public.check_in_booking(uuid) from public, anon, authenticated;
 grant execute on function public.check_in_booking(uuid) to service_role;
+
+-- Phase 4.5: atomic guest check-out and turnover housekeeping.
+create table if not exists public.housekeeping_tasks (
+  id uuid primary key default gen_random_uuid(),
+  booking_id uuid not null references public.bookings(id) on update cascade on delete restrict,
+  room_id uuid not null references public.rooms(id) on update cascade on delete restrict,
+  task_type text not null check (task_type in ('turnover','stayover','inspection','deep_clean')),
+  status text not null default 'pending' check (status in ('pending','cleaning','completed','inspected','cancelled')),
+  assigned_to text, notes text check (notes is null or char_length(notes) <= 2000),
+  created_at timestamptz not null default now(), completed_at timestamptz, updated_at timestamptz not null default now()
+);
+create index if not exists housekeeping_tasks_booking_idx on public.housekeeping_tasks(booking_id, created_at desc);
+create index if not exists housekeeping_tasks_room_status_idx on public.housekeeping_tasks(room_id, status);
+drop trigger if exists housekeeping_tasks_set_updated_at on public.housekeeping_tasks;
+create trigger housekeeping_tasks_set_updated_at before update on public.housekeeping_tasks for each row execute function public.set_updated_at();
+
+create or replace function public.check_out_booking(target_booking_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare b public.bookings; s public.booking_stays; a public.booking_room_assignments; r public.rooms; task public.housekeeping_tasks; active_count integer; checkout_time timestamptz;
+begin
+  perform pg_advisory_xact_lock(hashtext(target_booking_id::text));
+  select * into b from bookings where id=target_booking_id for update;
+  if not found then return jsonb_build_object('success',false,'reason','booking_not_found'); end if;
+  select * into s from booking_stays where booking_id=target_booking_id for update;
+  if s.stay_status = 'checked_out' then return jsonb_build_object('success',false,'reason','already_checked_out'); end if;
+  if b.booking_status <> 'Confirmed' then return jsonb_build_object('success',false,'reason','booking_not_confirmed'); end if;
+  if s.stay_status is distinct from 'checked_in' then return jsonb_build_object('success',false,'reason','not_checked_in'); end if;
+  select count(*) into active_count from booking_room_assignments where booking_id=target_booking_id and assignment_status='active';
+  if active_count = 0 then return jsonb_build_object('success',false,'reason','no_room_assigned'); end if;
+  if active_count <> 1 then return jsonb_build_object('success',false,'reason','multiple_rooms_assigned'); end if;
+  select * into a from booking_room_assignments where booking_id=target_booking_id and assignment_status='active' for update;
+  select * into r from rooms where id=a.room_id for update;
+  checkout_time := now();
+  update booking_stays set stay_status='checked_out',checked_out_at=checkout_time where booking_id=target_booking_id;
+  update bookings set booking_status='Completed',updated_at=checkout_time where id=target_booking_id;
+  update booking_room_assignments set assignment_status='released',released_at=checkout_time,released_by='admin',release_reason='Guest checked out' where id=a.id;
+  update rooms set housekeeping_status='dirty' where id=r.id;
+  insert into housekeeping_tasks(booking_id,room_id,task_type,status) values(target_booking_id,r.id,'turnover','pending') returning * into task;
+  return jsonb_build_object('success',true,'booking_status','Completed','stay_status','checked_out','checked_out_at',checkout_time,'room_number',r.room_number,'housekeeping_status','dirty','task_type',task.task_type,'task_status',task.status);
+end $$;
+revoke all on function public.check_out_booking(uuid) from public, anon, authenticated;
+grant execute on function public.check_out_booking(uuid) to service_role;

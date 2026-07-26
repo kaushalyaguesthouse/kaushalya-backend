@@ -62,6 +62,12 @@ function createSupabaseDb(supabase) {
       return { current: history.find((row) => row.assignment_status === "active") || null, history };
     },
     async checkIn(bookingId) { return assert(await supabase.rpc("check_in_booking", { target_booking_id: bookingId })); },
+    async checkOut(bookingId) { return assert(await supabase.rpc("check_out_booking", { target_booking_id: bookingId })); },
+    async housekeepingTasks(bookingId) {
+      const booking = assert(await supabase.from("bookings").select("id").eq("id", bookingId).maybeSingle());
+      if (!booking) return null;
+      return assert(await supabase.from("housekeeping_tasks").select("id,booking_id,room_id,task_type,status,assigned_to,notes,created_at,completed_at,updated_at,rooms!inner(room_number)").eq("booking_id", bookingId).order("created_at", { ascending: false }));
+    },
     async bookingStay(bookingId) {
       const booking = assert(await supabase.from("bookings").select("id").eq("id", bookingId).maybeSingle());
       if (!booking) return null;

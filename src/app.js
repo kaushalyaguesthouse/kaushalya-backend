@@ -295,6 +295,33 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       });
     } catch (e) { next(e); }
   });
+  app.post("/admin/bookings/:id/check-out", admin, validateUuid, async (req, res, next) => {
+    try {
+      const result = await db.checkOut(req.params.id);
+      if (!result?.success) {
+        const failures = {
+          booking_not_found: [404, "Booking not found."], booking_not_confirmed: [409, "Only a Confirmed booking may be checked out."],
+          not_checked_in: [409, "The guest must be checked in before check-out."], already_checked_out: [409, "The guest has already been checked out."],
+          no_room_assigned: [409, "The booking has no active room assignment."], multiple_rooms_assigned: [409, "The booking must have exactly one active room assignment."]
+        };
+        const [status, message] = failures[result?.reason] || [409, "The guest could not be checked out."];
+        return fail(res, status, message);
+      }
+      return res.json({
+        success: true,
+        booking: { booking_status: result.booking_status, stay_status: result.stay_status, checked_out_at: result.checked_out_at },
+        room: { room_number: result.room_number, housekeeping_status: result.housekeeping_status, derived_status: "cleaning" },
+        housekeeping_task: { task_type: result.task_type, status: result.task_status }
+      });
+    } catch (e) { next(e); }
+  });
+  app.get("/admin/bookings/:id/housekeeping", admin, validateUuid, async (req, res, next) => {
+    try {
+      const tasks = await db.housekeepingTasks(req.params.id);
+      if (!tasks) return fail(res, 404, "Booking not found.");
+      return res.json({ success: true, housekeeping_tasks: tasks.map((task) => ({ id: task.id, booking_id: task.booking_id, room_id: task.room_id, room_number: task.rooms?.room_number, task_type: task.task_type, status: task.status, assigned_to: task.assigned_to, notes: task.notes, created_at: task.created_at, completed_at: task.completed_at, updated_at: task.updated_at })) });
+    } catch (e) { next(e); }
+  });
   app.get("/admin/bookings/:id/stay", admin, validateUuid, async (req, res, next) => {
     try {
       const stay = await db.bookingStay(req.params.id);
