@@ -17,7 +17,9 @@ Provision an isolated PostgreSQL instance at the same major version, verify the 
 
 ## Migration and rollback
 
-Take a fresh backup, review locks with `EXPLAIN`/staging data, apply `migrations/001_production_schema.sql` and then `002_production_integrity_indexes.sql`, and retain the deployment log. Migrations are additive; application rollback means restoring the prior artifact while leaving compatible columns/indexes in place. A destructive schema rollback requires a tested restore rather than ad-hoc `DROP` statements.
+Take a fresh backup, review locks with staging data, and retain the deployment log. For the current legacy production database, **do not rerun 001**. Migrations 003 and 004 are already applied; apply 005 next. Do not apply 002 until a separate duplicate/integrity review has passed. Migration 005 deliberately aborts, naming conflicting values or incompatible catalog definitions, instead of rewriting production data. Application rollback means restoring the prior artifact while leaving compatible columns/indexes in place. A destructive schema rollback requires a tested restore rather than ad-hoc destructive SQL.
+
+After 005 commits successfully, execute `notify pgrst, 'reload schema';` in the Supabase SQL editor. PostgREST can briefly serve its previous schema cache while it reloads; wait 30 seconds and retry `/health/schema` before treating a `PGRST202`/`PGRST204`/`PGRST205` response as a migration failure. The public endpoint stays sanitized. An authenticated administrator can use `/admin/diagnostics/schema`, while Render logs contain the redacted underlying PostgREST message and details.
 
 ## Disaster recovery runbook
 

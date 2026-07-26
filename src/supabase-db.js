@@ -82,8 +82,17 @@ function createSupabaseDb(supabase, logger = console, connection = {}) {
   const schemaDiagnostic = async () => {
     const failures = [];
     for (const [resource, columns] of Object.entries(REQUIRED_SCHEMA)) {
-      try { const result = await supabase.from(resource).select(columns).limit(0); if (result.error) failures.push({ resource, ...publicHealthDiagnostic(result.error, result) }); }
-      catch (error) { failures.push({ resource, ...publicHealthDiagnostic(error) }); }
+      try {
+        const result = await supabase.from(resource).select(columns).limit(0);
+        if (result.error) {
+          const failure = { resource, ...publicHealthDiagnostic(result.error, result) };
+          failures.push(failure);
+          logger.error?.("SCHEMA_HEALTH_CHECK_FAILED", { resource, ...healthDiagnostic(result.error, result) });
+        }
+      } catch (error) {
+        failures.push({ resource, ...publicHealthDiagnostic(error) });
+        logger.error?.("SCHEMA_HEALTH_CHECK_FAILED", { resource, ...healthDiagnostic(error) });
+      }
     }
     return { ready: failures.length === 0, checked: Object.keys(REQUIRED_SCHEMA).length, failures };
   };
