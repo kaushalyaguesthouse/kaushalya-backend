@@ -8,6 +8,8 @@ const bookingId = "123e4567-e89b-12d3-a456-426614174000";
 const reviewId = "123e4567-e89b-12d3-a456-426614174001";
 let receivedBookingFilters;
 let receivedRoomFilters;
+let receivedAssignment;
+let assignmentError;
 const roomRows = [
   { id: "room-101", room_number: "101", room_types: { name: "Standard" }, floor: 1, operational_status: "operational", housekeeping_status: "clean", notes: null, is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", guest_name: "Private Guest", payment_id: "pay_private" },
   { id: "room-102", room_number: "102", room_types: { name: "Standard" }, floor: 1, operational_status: "maintenance", housekeeping_status: "clean", notes: "Inspect lock", is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
@@ -24,6 +26,13 @@ const db = {
   },
   rooms: async (filters) => { receivedRoomFilters = filters; return { items: roomRows.slice(0, 2), total: 4 }; },
   roomStatus: async () => roomRows,
+  assignRoom: async (id, roomId) => {
+    receivedAssignment = { id, roomId };
+    if (assignmentError) throw assignmentError;
+    return { id: "assignment-1", booking_id: id, room_id: roomId, room_number: "101", assignment_status: "active", from: "2026-08-01", until: "2026-08-03", assigned_at: "2026-07-01T00:00:00Z", released_at: null };
+  },
+  roomAssignmentHistory: async (id) => [{ id: "assignment-1", booking_id: id, room_id: "room-1", room_number: "101", assignment_status: "released", from: "2026-08-01", until: "2026-08-03", assigned_at: "2026-07-01T00:00:00Z", released_at: "2026-07-02T00:00:00Z" }],
+  releaseRoom: async () => null,
   adminAvailability: async () => [{ id: bookingId, booking_id: "KGH-1", room_type: "Standard", check_in: "2026-08-01", check_out: "2026-08-03", booking_status: "Confirmed", customer_name: "Must not leak" }],
   booking: async (id) => id === bookingId ? { id } : null,
   updateBooking: async (id, status) => id === bookingId ? { id, booking_status: status } : null,
@@ -168,6 +177,32 @@ test("admin room status derives operational and housekeeping states without book
   assert.deepEqual(body.summary, { available: 1, occupied: 0, reserved: 0, maintenance: 1, cleaning: 1, out_of_service: 1 });
   assert.deepEqual([body.available_count, body.occupied_count, body.reserved_count, body.maintenance_count, body.cleaning_count, body.out_of_service_count], [1, 0, 0, 1, 1, 1]);
   assert.equal(JSON.stringify(body).includes("Private Guest"), false);
+}));
+
+test("manual room assignment uses only room_id, exposes range dates without PII, and maps overlap to 409", () => withServer(async (url) => {
+  let response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "x-admin-key": "bootstrap-secret" } });
+  const { accessToken } = await response.json();
+  const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json" };
+  assignmentError = null;
+  response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: reviewId, from: "1900-01-01", until: "2100-01-01", customer_name: "Private Guest", razorpay_payment_id: "pay_private" }) });
+  assert.equal(response.status, 201);
+  assert.deepEqual(receivedAssignment, { id: bookingId, roomId: reviewId });
+  let body = await response.json();
+  assert.deepEqual({ from: body.assignment.from, until: body.assignment.until }, { from: "2026-08-01", until: "2026-08-03" });
+  assert.equal(JSON.stringify(body).includes("Private Guest"), false);
+  assert.equal(JSON.stringify(body).includes("pay_private"), false);
+
+  assignmentError = Object.assign(new Error("ROOM_ASSIGNMENT_CONFLICT"), { code: "23P01" });
+  response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: reviewId }) });
+  assert.equal(response.status, 409);
+  body = await response.json();
+  assert.deepEqual(body, { success: false, message: "This room is already assigned for part of the booking dates.", code: "ROOM_ASSIGNMENT_CONFLICT" });
+  assignmentError = null;
+
+  response = await fetch(`${url}/admin/bookings/${bookingId}/room-assignments`, { headers });
+  body = await response.json();
+  assert.deepEqual({ from: body.assignments[0].from, until: body.assignments[0].until }, { from: "2026-08-01", until: "2026-08-03" });
+  assert.equal(JSON.stringify(body).includes("email"), false);
 }));
 
 test("admin login is rate limited", () => withServer(async (url) => {

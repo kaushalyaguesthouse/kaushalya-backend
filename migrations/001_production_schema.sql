@@ -109,3 +109,122 @@ begin
 end $$;
 revoke all on function public.create_booking_atomic(jsonb, integer) from public, anon, authenticated;
 grant execute on function public.create_booking_atomic(jsonb, integer) to service_role;
+
+-- Phase 4.2: manual physical-room allocation. Date ranges are authoritative
+-- booking data and are protected against concurrent overlapping assignments.
+create extension if not exists btree_gist;
+
+create table if not exists public.booking_room_assignments (
+  id uuid primary key default gen_random_uuid(),
+  booking_id uuid not null references public.bookings(id) on update cascade on delete restrict,
+  room_id uuid not null references public.rooms(id) on update cascade on delete restrict,
+  allocation_range daterange,
+  assignment_status text not null default 'active' check (assignment_status in ('active','released')),
+  assigned_at timestamptz not null default now(),
+  released_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.booking_room_assignments add column if not exists allocation_range daterange;
+
+-- Safely backfill an earlier Phase 4.2 deployment before making the range mandatory.
+update public.booking_room_assignments assignment
+set allocation_range = daterange(booking.check_in, booking.check_out, '[)')
+from public.bookings booking
+where assignment.booking_id = booking.id
+  and assignment.allocation_range is null
+  and booking.check_in is not null
+  and booking.check_out is not null
+  and booking.check_in < booking.check_out;
+
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'public.booking_room_assignments'::regclass and conname = 'booking_room_assignments_allocation_range_check') then
+    alter table public.booking_room_assignments add constraint booking_room_assignments_allocation_range_check check (
+      allocation_range is not null
+      and not isempty(allocation_range)
+      and not lower_inf(allocation_range)
+      and not upper_inf(allocation_range)
+      and lower_inc(allocation_range)
+      and not upper_inc(allocation_range)
+      and lower(allocation_range) < upper(allocation_range)
+    );
+  end if;
+end $$;
+
+create unique index if not exists booking_room_assignments_one_active_booking_uidx
+  on public.booking_room_assignments(booking_id) where assignment_status = 'active';
+
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'public.booking_room_assignments'::regclass and conname = 'booking_room_assignments_no_active_room_overlap') then
+    alter table public.booking_room_assignments add constraint booking_room_assignments_no_active_room_overlap
+      exclude using gist (room_id with =, allocation_range with &&)
+      where (assignment_status = 'active');
+  end if;
+end $$;
+
+create or replace function public.protect_room_assignment_history() returns trigger language plpgsql as $$
+begin
+  if tg_op = 'DELETE' then raise exception 'ROOM_ASSIGNMENT_HISTORY_IMMUTABLE'; end if;
+  if (to_jsonb(new) - array['assignment_status','released_at','updated_at'])
+      is distinct from (to_jsonb(old) - array['assignment_status','released_at','updated_at'])
+     or old.assignment_status <> 'active'
+     or new.assignment_status <> 'released'
+     or new.released_at is null then
+    raise exception 'ROOM_ASSIGNMENT_HISTORY_IMMUTABLE';
+  end if;
+  new.updated_at = now();
+  return new;
+end $$;
+drop trigger if exists booking_room_assignments_protect_history on public.booking_room_assignments;
+create trigger booking_room_assignments_protect_history before update or delete on public.booking_room_assignments
+  for each row execute function public.protect_room_assignment_history();
+
+create or replace function public.assign_room_atomic(target_booking_id uuid, target_room_id uuid)
+returns setof public.booking_room_assignments language plpgsql security definer set search_path = public as $$
+declare
+  locked_booking public.bookings;
+  selected_room record;
+  created public.booking_room_assignments;
+begin
+  select * into locked_booking from public.bookings where id = target_booking_id for update;
+  if not found then raise exception 'BOOKING_NOT_FOUND'; end if;
+  if locked_booking.check_in is null or locked_booking.check_out is null or locked_booking.check_in >= locked_booking.check_out then
+    raise exception 'BOOKING_DATES_INVALID';
+  end if;
+  if locked_booking.booking_status not in ('Pending','Confirmed') then raise exception 'BOOKING_NOT_ASSIGNABLE'; end if;
+
+  select room.id, room.is_active, room.operational_status, room_type.name as room_type
+    into selected_room
+    from public.rooms room join public.room_types room_type on room_type.id = room.room_type_id
+    where room.id = target_room_id for update of room;
+  if not found then raise exception 'ROOM_NOT_FOUND'; end if;
+  if selected_room.room_type <> locked_booking.room_type then raise exception 'ROOM_TYPE_MISMATCH'; end if;
+  if not selected_room.is_active or selected_room.operational_status <> 'operational' then raise exception 'ROOM_NOT_OPERATIONAL'; end if;
+
+  begin
+    insert into public.booking_room_assignments(booking_id, room_id, allocation_range)
+    values (locked_booking.id, selected_room.id, daterange(locked_booking.check_in, locked_booking.check_out, '[)'))
+    returning * into created;
+  exception
+    when exclusion_violation then raise exception 'ROOM_ASSIGNMENT_CONFLICT' using errcode = '23P01';
+    when unique_violation then raise exception 'BOOKING_ALREADY_ASSIGNED' using errcode = '23505';
+  end;
+  return next created;
+end $$;
+
+create or replace function public.release_room_assignment(target_booking_id uuid)
+returns setof public.booking_room_assignments language plpgsql security definer set search_path = public as $$
+declare released public.booking_room_assignments;
+begin
+  select * into released from public.booking_room_assignments
+    where booking_id = target_booking_id and assignment_status = 'active' for update;
+  if not found then return; end if;
+  update public.booking_room_assignments set assignment_status = 'released', released_at = now()
+    where id = released.id returning * into released;
+  return next released;
+end $$;
+
+revoke all on function public.assign_room_atomic(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.release_room_assignment(uuid) from public, anon, authenticated;
+grant execute on function public.assign_room_atomic(uuid, uuid) to service_role;
+grant execute on function public.release_room_assignment(uuid) to service_role;

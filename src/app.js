@@ -93,6 +93,23 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   app.use(createRateLimiter());
 
   const fail = (res, status, message, errors) => res.status(status).json({ success: false, message, ...(errors && { errors }) });
+  const assignmentFailure = (res, error) => {
+    const code = String(error.code === "23P01" ? "ROOM_ASSIGNMENT_CONFLICT" : error.message || "").match(/ROOM_[A-Z_]+|BOOKING_[A-Z_]+/)?.[0];
+    const failures = {
+      ROOM_ASSIGNMENT_CONFLICT: [409, "This room is already assigned for part of the booking dates."],
+      BOOKING_ALREADY_ASSIGNED: [409, "This booking already has an active room assignment."],
+      BOOKING_NOT_ASSIGNABLE: [409, "Only Pending or Confirmed bookings may be assigned."],
+      BOOKING_DATES_INVALID: [422, "The booking has invalid or missing dates."],
+      ROOM_TYPE_MISMATCH: [422, "The room type does not match the booking."],
+      ROOM_NOT_OPERATIONAL: [422, "The room is not active and operational."],
+      ROOM_NOT_FOUND: [404, "Room not found."],
+      BOOKING_NOT_FOUND: [404, "Booking not found."]
+    };
+    if (!failures[code]) return false;
+    const [status, message] = failures[code];
+    res.status(status).json({ success: false, message, code });
+    return true;
+  };
   const admin = (req, res, next) => {
     const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
     return verifyAdminToken(token, config.adminSecret) ? next() : fail(res, 401, "Admin authentication required.");
@@ -243,6 +260,14 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     catch (e) { next(e); }
   });
   app.get("/admin/bookings/:id", admin, validateUuid, async (req, res, next) => { try { const booking = await db.booking(req.params.id); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
+  app.post("/admin/bookings/:id/assign-room", admin, validateUuid, async (req, res, next) => {
+    try {
+      if (!UUID_RE.test(String(req.body?.room_id || ""))) return fail(res, 422, "A valid room_id is required.", { room_id: "room_id must be a UUID." });
+      return res.status(201).json({ success: true, assignment: await db.assignRoom(req.params.id, req.body.room_id) });
+    } catch (error) { if (!assignmentFailure(res, error)) next(error); }
+  });
+  app.get("/admin/bookings/:id/room-assignments", admin, validateUuid, async (req, res, next) => { try { return res.json({ success: true, assignments: await db.roomAssignmentHistory(req.params.id) }); } catch (e) { next(e); } });
+  app.post("/admin/bookings/:id/release-room", admin, validateUuid, async (req, res, next) => { try { const assignment = await db.releaseRoom(req.params.id); return assignment ? res.json({ success: true, assignment }) : fail(res, 404, "No active room assignment was found."); } catch (e) { next(e); } });
   app.patch("/admin/bookings/:id/status", admin, validateUuid, async (req, res, next) => { try { if (!BOOKING_STATUSES.includes(req.body?.status)) return fail(res, 422, "Invalid booking status.", { status: "Status must be Pending, Confirmed, Cancelled, or Completed." }); const booking = await db.updateBooking(req.params.id, req.body.status); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
   app.get("/admin/reviews", admin, async (_req, res, next) => { try { res.json({ success: true, reviews: await db.reviews() }); } catch (e) { next(e); } });
   app.patch("/admin/reviews/:id", admin, validateUuid, async (req, res, next) => { try { if (!["approved", "rejected"].includes(req.body?.status)) return fail(res, 422, "Status must be approved or rejected.", { status: "Status must be approved or rejected." }); const review = await db.moderateReview(req.params.id, req.body.status); return review ? res.json({ success: true, review }) : fail(res, 404, "Review not found."); } catch (e) { next(e); } });
