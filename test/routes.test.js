@@ -146,6 +146,8 @@ test("admin rooms requires authentication, validates filters, and paginates a pr
     response = await fetch(`${url}/admin/rooms?${query}`, { headers });
     assert.equal(response.status, 422, query);
   }
+  response = await fetch(`${url}/admin/rooms?housekeeping_status=inspected`, { headers });
+  assert.equal(response.status, 200);
   response = await fetch(`${url}/admin/rooms?room_type=Standard&operational_status=operational&housekeeping_status=clean&is_active=true&page=2&limit=2`, { headers });
   assert.equal(response.status, 200);
   const body = await response.json();

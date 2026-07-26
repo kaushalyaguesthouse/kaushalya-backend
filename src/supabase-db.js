@@ -44,7 +44,12 @@ function createSupabaseDb(supabase) {
       if (result.error) throw new Error(result.error.message);
       return { items: result.data, total: result.count || 0 };
     },
-    async roomStatus() { return assert(await supabase.from("rooms").select("id,room_number,floor,operational_status,housekeeping_status,notes,is_active,created_at,updated_at,room_types!inner(name)").order("room_number", { ascending: true })); },
+    async roomStatus() {
+      const rooms = assert(await supabase.from("rooms").select("id,room_number,floor,operational_status,housekeeping_status,notes,is_active,created_at,updated_at,room_types!inner(name)").order("room_number", { ascending: true }));
+      const occupied = assert(await supabase.from("booking_room_assignments").select("room_id,bookings!inner(booking_stays!inner(stay_status))").eq("assignment_status", "active").eq("bookings.booking_stays.stay_status", "checked_in"));
+      const occupiedIds = new Set(occupied.map((row) => row.room_id));
+      return rooms.map((room) => ({ ...room, ...(occupiedIds.has(room.id) && { stay_status: "checked_in" }) }));
+    },
     async adminAvailability(start, end, roomType) { const exclusiveEnd = new Date(`${end}T00:00:00.000Z`); exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1); let q = supabase.from("bookings").select("id,booking_id,room_type,check_in,check_out,booking_status").lt("check_in", exclusiveEnd.toISOString().slice(0, 10)).gt("check_out", start).order("check_in", { ascending: true }); if (roomType) q = q.eq("room_type", roomType); return assert(await q); },
     async analyticsBookings() { return assert(await supabase.from("bookings").select("room_type,check_in,check_out,adults,children,booking_status,payment_status,amount,advance_amount,created_at")); },
     async assignRoom(bookingId, roomId, actor) { return assert(await supabase.rpc("assign_booking_room", { target_booking_id: bookingId, target_room_id: roomId, actor })); },
@@ -55,6 +60,14 @@ function createSupabaseDb(supabase) {
       const rows = assert(await supabase.from("booking_room_assignments").select("id,booking_id,room_id,allocation_range,assignment_status,assigned_at,assigned_by,released_at,released_by,release_reason,created_at,updated_at,rooms!inner(id,room_number,room_types!inner(name))").eq("booking_id", bookingId).order("assigned_at", { ascending: false }));
       const history = rows.map((row) => ({ id: row.id, booking_id: row.booking_id, ...allocationDates(row.allocation_range), assignment_status: row.assignment_status, assigned_at: row.assigned_at, assigned_by: row.assigned_by, released_at: row.released_at, released_by: row.released_by, release_reason: row.release_reason, created_at: row.created_at, updated_at: row.updated_at, room: { id: row.rooms.id, room_number: row.rooms.room_number, room_type: row.rooms.room_types.name } }));
       return { current: history.find((row) => row.assignment_status === "active") || null, history };
+    },
+    async checkIn(bookingId) { return assert(await supabase.rpc("check_in_booking", { target_booking_id: bookingId })); },
+    async bookingStay(bookingId) {
+      const booking = assert(await supabase.from("bookings").select("id").eq("id", bookingId).maybeSingle());
+      if (!booking) return null;
+      const stay = assert(await supabase.from("booking_stays").select("stay_status,checked_in_at,checked_out_at").eq("booking_id", bookingId).maybeSingle());
+      const assignment = assert(await supabase.from("booking_room_assignments").select("rooms!inner(room_number)").eq("booking_id", bookingId).eq("assignment_status", "active").maybeSingle());
+      return { stay_status: stay?.stay_status || "not_checked_in", checked_in_at: stay?.checked_in_at || null, checked_out_at: stay?.checked_out_at || null, room_number: assignment?.rooms?.room_number || null };
     },
     async booking(id) { return assert(await supabase.from("bookings").select("*").eq("id", id).maybeSingle()); },
     async updateBooking(id, status) { return assert(await supabase.from("bookings").update({ booking_status: status, updated_at: new Date().toISOString() }).eq("id", id).select().single()); },
