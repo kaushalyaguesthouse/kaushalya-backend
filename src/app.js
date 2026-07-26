@@ -143,6 +143,9 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   app.get("/health", async (_req, res, next) => { try { const healthy = await db.health(); return res.status(healthy ? 200 : 503).json(healthPayload(healthy)); } catch (error) { return next(error); } });
   app.get("/health/database", async (_req, res, next) => { try { const healthy = await db.health(); return res.status(healthy ? 200 : 503).json(healthPayload(healthy)); } catch (error) { return next(error); } });
   app.get("/health/application", (_req, res) => res.json(healthPayload(null)));
+  app.get("/admin/diagnostics/database", admin, async (_req, res, next) => {
+    try { return res.json(await db.databaseDiagnostic()); } catch (error) { return next(error); }
+  });
   app.get("/rooms", (_req, res) => res.json({ success: true, rooms: config.rooms }));
   app.post("/quote", (req, res) => {
     const result = validate(req.body);

@@ -58,6 +58,20 @@ test("admin login rejects a bad key and issues a signed token", () => withServer
   assert.equal(verifyAdminToken(body.accessToken, "different-session-secret"), false);
 }));
 
+test("database diagnostics require admin authentication and return only safe diagnostic fields", () => withServer(async (url) => {
+  const original = db.databaseDiagnostic;
+  db.databaseDiagnostic = async () => ({ success: false, failure_type: "permission_denied", code: "42501", message: "permission denied", details: null, status: 403 });
+  try {
+    let response = await fetch(`${url}/admin/diagnostics/database`);
+    assert.equal(response.status, 401);
+    response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "x-admin-key": "bootstrap-secret" } });
+    const { accessToken } = await response.json();
+    response = await fetch(`${url}/admin/diagnostics/database`, { headers: { authorization: `Bearer ${accessToken}` } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { success: false, failure_type: "permission_denied", code: "42501", message: "permission denied", details: null, status: 403 });
+  } finally { db.databaseDiagnostic = original; }
+}));
+
 test("admin login comparison is case-sensitive and safely rejects different UTF-8 byte lengths", () => withServer(async (url) => {
   let response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bootstrapKey: "BOOTSTRAP-SECRET" }) });
   assert.equal(response.status, 401);
