@@ -25,7 +25,7 @@ const supabase = createClient(config.supabaseUrl, config.supabaseKey, {
   realtime: { transport: DisabledRealtimeTransport }
 });
 const razorpay = new Razorpay({ key_id: config.razorpayKeyId, key_secret: config.razorpaySecret });
-const app = createApp({ config, db: createSupabaseDb(supabase), razorpay, mailer: createMailer(config), logger });
+const app = createApp({ config, db: createSupabaseDb(supabase, logger), razorpay, mailer: createMailer(config), logger });
 if (require.main === module) {
   const server = app.listen(config.port, "0.0.0.0", () => logger.info("APPLICATION_STARTED", { port: config.port, environment: config.nodeEnv }));
   let shuttingDown = false;
