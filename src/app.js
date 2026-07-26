@@ -14,6 +14,39 @@ function createRateLimiter(limit = 120, windowMs = 60000) {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const BOOKING_STATUSES = ["Pending", "Confirmed", "Cancelled", "Completed"];
+const ADMIN_BOOKING_FIELDS = ["id", "booking_id", "customer_name", "phone", "email", "room_type", "check_in", "check_out", "adults", "children", "booking_status", "payment_status", "amount", "advance_amount", "created_at"];
+
+function isDate(value) {
+  if (!DATE_RE.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function validateAdminBookingsQuery(query, rooms) {
+  const errors = {};
+  const integer = (name, fallback, maximum) => {
+    if (query[name] == null || query[name] === "") return fallback;
+    if (!/^\d+$/.test(String(query[name])) || Number(query[name]) < 1) errors[name] = `${name} must be an integer greater than or equal to 1.`;
+    else if (maximum && Number(query[name]) > maximum) errors[name] = `${name} must not exceed ${maximum}.`;
+    return Number(query[name]);
+  };
+  const filters = {
+    search: String(query.search || "").trim(),
+    status: String(query.status || "").trim(),
+    room_type: String(query.room_type || "").trim(),
+    check_in_from: String(query.check_in_from || "").trim(),
+    check_in_to: String(query.check_in_to || "").trim(),
+    page: integer("page", 1),
+    limit: integer("limit", 25, 100)
+  };
+  if (filters.status && !BOOKING_STATUSES.includes(filters.status)) errors.status = "Invalid booking status.";
+  if (filters.room_type && !rooms[filters.room_type]) errors.room_type = "Unknown room type.";
+  for (const name of ["check_in_from", "check_in_to"]) if (filters[name] && !isDate(filters[name])) errors[name] = `${name} must be a valid date in YYYY-MM-DD format.`;
+  if (!errors.check_in_from && !errors.check_in_to && filters.check_in_from && filters.check_in_to && filters.check_in_from > filters.check_in_to) errors.check_in_to = "check_in_to must be on or after check_in_from.";
+  return { valid: Object.keys(errors).length === 0, errors, filters };
+}
 
 function validateUuid(req, res, next) {
   if (!UUID_RE.test(String(req.params.id || ""))) return res.status(400).json({ success: false, message: "Invalid ID." });
@@ -135,7 +168,18 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     if (!comparisonSucceeded) return fail(res, 401, "Invalid admin credentials.");
     res.json({ success: true, accessToken: signAdminToken(config.adminSecret) });
   });
-  app.get("/admin/bookings", admin, async (req, res, next) => { try { res.json({ success: true, bookings: await db.bookings(req.query) }); } catch (e) { next(e); } });
+  app.get("/admin/bookings", admin, async (req, res, next) => {
+    try {
+      const validation = validateAdminBookingsQuery(req.query, config.rooms);
+      if (!validation.valid) return fail(res, 422, "Invalid booking filters.", validation.errors);
+      const result = await db.bookings(validation.filters);
+      const rows = Array.isArray(result) ? result : result.items;
+      const items = rows.map((booking) => Object.fromEntries(ADMIN_BOOKING_FIELDS.filter((field) => Object.hasOwn(booking, field)).map((field) => [field, booking[field]])));
+      const total = Array.isArray(result) ? items.length : result.total;
+      const { page, limit, ...filters } = validation.filters;
+      return res.json({ success: true, items, bookings: items, pagination: { page, limit, total, total_pages: Math.ceil(total / limit) }, filters });
+    } catch (e) { next(e); }
+  });
   app.get("/admin/availability", admin, async (req, res, next) => {
     try {
       const validation = validateAvailabilityQuery(req.query);
@@ -146,7 +190,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     } catch (e) { next(e); }
   });
   app.get("/admin/bookings/:id", admin, validateUuid, async (req, res, next) => { try { const booking = await db.booking(req.params.id); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
-  app.patch("/admin/bookings/:id/status", admin, validateUuid, async (req, res, next) => { try { if (!["Pending", "Confirmed", "Cancelled", "Completed"].includes(req.body?.status)) return fail(res, 422, "Invalid booking status.", { status: "Status must be Pending, Confirmed, Cancelled, or Completed." }); const booking = await db.updateBooking(req.params.id, req.body.status); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
+  app.patch("/admin/bookings/:id/status", admin, validateUuid, async (req, res, next) => { try { if (!BOOKING_STATUSES.includes(req.body?.status)) return fail(res, 422, "Invalid booking status.", { status: "Status must be Pending, Confirmed, Cancelled, or Completed." }); const booking = await db.updateBooking(req.params.id, req.body.status); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
   app.get("/admin/reviews", admin, async (_req, res, next) => { try { res.json({ success: true, reviews: await db.reviews() }); } catch (e) { next(e); } });
   app.patch("/admin/reviews/:id", admin, validateUuid, async (req, res, next) => { try { if (!["approved", "rejected"].includes(req.body?.status)) return fail(res, 422, "Status must be approved or rejected.", { status: "Status must be approved or rejected." }); const review = await db.moderateReview(req.params.id, req.body.status); return review ? res.json({ success: true, review }) : fail(res, 404, "Review not found."); } catch (e) { next(e); } });
   app.delete("/admin/reviews/:id", admin, validateUuid, async (req, res, next) => { try { const review = await db.deleteReview(req.params.id); return review ? res.json({ success: true, message: "Review deleted successfully.", review }) : fail(res, 404, "Review not found."); } catch (e) { next(e); } });

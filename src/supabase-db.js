@@ -12,7 +12,22 @@ function createSupabaseDb(supabase) {
     async markEmailSent(id) { return assert(await supabase.from("bookings").update({ email_sent_at: new Date().toISOString() }).eq("id", id).is("email_sent_at", null)); },
     async createReview(review) { return assert(await supabase.from("reviews").insert({ ...review, status: "pending" })); },
     async approvedReviews() { return assert(await supabase.from("reviews").select("id,customer_name,rating,review,created_at").eq("status", "approved").order("created_at", { ascending: false }).limit(100)); },
-    async bookings(query) { let q = supabase.from("bookings").select("*").order("created_at", { ascending: false }).limit(Math.min(Number(query.limit) || 100, 500)); if (query.status) q = q.eq("booking_status", query.status); return assert(await q); },
+    async bookings(filters) {
+      const fields = "id,booking_id,customer_name,phone,email,room_type,check_in,check_out,adults,children,booking_status,payment_status,amount,advance_amount,created_at";
+      const offset = (filters.page - 1) * filters.limit;
+      let q = supabase.from("bookings").select(fields, { count: "exact" }).order("created_at", { ascending: false }).range(offset, offset + filters.limit - 1);
+      if (filters.status) q = q.eq("booking_status", filters.status);
+      if (filters.room_type) q = q.eq("room_type", filters.room_type);
+      if (filters.check_in_from) q = q.gte("check_in", filters.check_in_from);
+      if (filters.check_in_to) q = q.lte("check_in", filters.check_in_to);
+      if (filters.search) {
+        const term = filters.search.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        q = q.or(`booking_id.ilike."%${term}%",customer_name.ilike."%${term}%",phone.ilike."%${term}%"`);
+      }
+      const result = await q;
+      if (result.error) throw new Error(result.error.message);
+      return { items: result.data, total: result.count || 0 };
+    },
     async adminAvailability(start, end, roomType) { const exclusiveEnd = new Date(`${end}T00:00:00.000Z`); exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1); let q = supabase.from("bookings").select("id,booking_id,room_type,check_in,check_out,booking_status").lt("check_in", exclusiveEnd.toISOString().slice(0, 10)).gt("check_out", start).order("check_in", { ascending: true }); if (roomType) q = q.eq("room_type", roomType); return assert(await q); },
     async booking(id) { return assert(await supabase.from("bookings").select("*").eq("id", id).maybeSingle()); },
     async updateBooking(id, status) { return assert(await supabase.from("bookings").update({ booking_status: status, updated_at: new Date().toISOString() }).eq("id", id).select().single()); },
