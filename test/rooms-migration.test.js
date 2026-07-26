@@ -53,3 +53,16 @@ test("room foundation and assignment phases retain their constraints, indexes, a
   assert.match(migration, /revoke all on function public\.assign_booking_room\(uuid,uuid,text\), public\.release_booking_room\(uuid,text,text\) from public, anon, authenticated/);
   assert.match(migration, /grant execute on function public\.assign_booking_room\(uuid,uuid,text\), public\.release_booking_room\(uuid,text,text\) to service_role/);
 });
+
+test("room assignments use immutable booking-derived ranges and reject active overlaps", () => {
+  assert.match(migration, /create extension if not exists btree_gist/);
+  assert.match(migration, /allocation_range daterange not null/);
+  assert.match(migration, /new\.allocation_range = daterange\(arrival, departure, '\[\)'\)/);
+  assert.match(migration, /create trigger booking_room_assignments_set_allocation_range before insert/);
+  assert.doesNotMatch(migration, /before (?:insert or update|update or insert)[\s\S]*set_booking_room_allocation_range/);
+  assert.match(migration, /not isempty\(allocation_range\).*not lower_inf\(allocation_range\).*not upper_inf\(allocation_range\)[\s\S]*lower_inc\(allocation_range\) and not upper_inc\(allocation_range\)/);
+  assert.match(migration, /exclude using gist \(room_id with =, allocation_range with &&\) where \(assignment_status = 'active'\)/);
+  assert.match(migration, /exception when exclusion_violation[\s\S]*'reason','room_assignment_conflict'/);
+  assert.match(migration, /update booking_room_assignments set assignment_status='released',released_at=now\(\),released_by=actor,release_reason=reason/);
+  assert.doesNotMatch(migration, /update booking_room_assignments set[^;]*allocation_range/);
+});

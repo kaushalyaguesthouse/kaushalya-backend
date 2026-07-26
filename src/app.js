@@ -247,6 +247,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       if (!UUID_RE.test(String(req.body?.room_id || ""))) return fail(res, 422, "A valid room_id is required.", { room_id: "room_id must be a UUID." });
       const result = await db.assignRoom(req.params.id, req.body.room_id, "admin");
       if (!result?.success) {
+        if (result?.reason === "room_assignment_conflict") return res.status(409).json({ success: false, code: "ROOM_ASSIGNMENT_CONFLICT", message: "The room is already assigned for an overlapping stay." });
         const failures = {
           booking_not_found: [404, "Booking not found."], room_not_found: [404, "Room not found."],
           booking_status: [409, "Only Pending or Confirmed bookings may be assigned a room."],

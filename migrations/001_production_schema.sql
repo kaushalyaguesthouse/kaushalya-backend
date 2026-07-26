@@ -1,5 +1,6 @@
 -- Additive/idempotent production migration. Run in the Supabase SQL editor.
 create extension if not exists pgcrypto;
+create extension if not exists btree_gist;
 
 -- Phase 4.1: physical-room inventory only. It is intentionally not connected to bookings.
 create table if not exists public.room_types (
@@ -119,11 +120,45 @@ create table if not exists public.booking_room_assignments (
   assigned_at timestamptz not null default now(), assigned_by text not null,
   released_at timestamptz, released_by text, release_reason text check (release_reason is null or char_length(release_reason) <= 500),
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  allocation_range daterange not null,
   check ((assignment_status = 'active' and released_at is null and released_by is null) or (assignment_status = 'released' and released_at is not null and released_by is not null))
 );
+alter table public.booking_room_assignments add column if not exists allocation_range daterange;
+update public.booking_room_assignments assignments
+set allocation_range = daterange(bookings.check_in, bookings.check_out, '[)')
+from public.bookings bookings
+where assignments.booking_id = bookings.id and assignments.allocation_range is null;
+alter table public.booking_room_assignments alter column allocation_range set not null;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'booking_room_assignments_allocation_range_check' and conrelid = 'public.booking_room_assignments'::regclass) then
+    alter table public.booking_room_assignments add constraint booking_room_assignments_allocation_range_check check (
+      not isempty(allocation_range) and not lower_inf(allocation_range) and not upper_inf(allocation_range)
+      and lower_inc(allocation_range) and not upper_inc(allocation_range)
+    );
+  end if;
+end $$;
 create unique index if not exists booking_room_assignments_one_active_idx on public.booking_room_assignments(booking_id) where assignment_status = 'active';
 create index if not exists booking_room_assignments_booking_history_idx on public.booking_room_assignments(booking_id, assigned_at desc);
 create index if not exists booking_room_assignments_room_idx on public.booking_room_assignments(room_id);
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'booking_room_assignments_no_active_room_overlap' and conrelid = 'public.booking_room_assignments'::regclass) then
+    alter table public.booking_room_assignments add constraint booking_room_assignments_no_active_room_overlap
+      exclude using gist (room_id with =, allocation_range with &&) where (assignment_status = 'active');
+  end if;
+end $$;
+
+create or replace function public.set_booking_room_allocation_range() returns trigger language plpgsql security definer set search_path = public as $$
+declare arrival date; departure date;
+begin
+  select check_in, check_out into arrival, departure from bookings where id = new.booking_id;
+  if arrival is null or departure is null or arrival >= departure then
+    raise exception using errcode = '22000', message = 'booking must have a finite, non-empty stay';
+  end if;
+  new.allocation_range = daterange(arrival, departure, '[)');
+  return new;
+end $$;
+drop trigger if exists booking_room_assignments_set_allocation_range on public.booking_room_assignments;
+create trigger booking_room_assignments_set_allocation_range before insert on public.booking_room_assignments for each row execute function public.set_booking_room_allocation_range();
 drop trigger if exists booking_room_assignments_set_updated_at on public.booking_room_assignments;
 create trigger booking_room_assignments_set_updated_at before update on public.booking_room_assignments for each row execute function public.set_updated_at();
 
@@ -141,7 +176,11 @@ begin
   if r.operational_status <> 'operational' then return jsonb_build_object('success',false,'reason','room_not_operational'); end if;
   if r.type_name <> b.room_type then return jsonb_build_object('success',false,'reason','room_type_mismatch'); end if;
   if exists(select 1 from booking_room_assignments where booking_id=target_booking_id and assignment_status='active') then return jsonb_build_object('success',false,'reason','already_assigned'); end if;
-  insert into booking_room_assignments(booking_id,room_id,assigned_by) values(target_booking_id,target_room_id,actor) returning * into a;
+  begin
+    insert into booking_room_assignments(booking_id,room_id,assigned_by) values(target_booking_id,target_room_id,actor) returning * into a;
+  exception when exclusion_violation then
+    return jsonb_build_object('success',false,'reason','room_assignment_conflict');
+  end;
   return jsonb_build_object('success',true,'assigned_at',a.assigned_at,'room',jsonb_build_object('id',r.id,'room_number',r.room_number,'room_type',r.type_name));
 end $$;
 
