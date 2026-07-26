@@ -313,3 +313,60 @@ begin
 end $$;
 revoke all on function public.transition_housekeeping_task(uuid,text) from public, anon, authenticated;
 grant execute on function public.transition_housekeeping_task(uuid,text) to service_role;
+
+-- Feature Pack 2A: business configuration, immutable invoice metadata and audit trail.
+alter table public.bookings add column if not exists refund_amount numeric(12,2) not null default 0 check (refund_amount >= 0);
+
+create table if not exists public.business_settings (
+  id boolean primary key default true check (id), business_name text not null default 'Kaushalya Guest House',
+  gst_number text, gst_percent numeric(5,2) not null default 0 check (gst_percent between 0 and 100), address text,
+  phone text, email text, invoice_footer text, invoice_prefix text not null default 'KGH' check (invoice_prefix ~ '^[A-Z0-9-]{1,12}$'),
+  currency char(3) not null default 'INR', timezone text not null default 'Asia/Kolkata', logo_metadata jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+insert into public.business_settings(id) values(true) on conflict (id) do nothing;
+drop trigger if exists business_settings_set_updated_at on public.business_settings;
+create trigger business_settings_set_updated_at before update on public.business_settings for each row execute function public.set_updated_at();
+
+create sequence if not exists public.invoice_number_seq;
+create table if not exists public.invoices (
+  id uuid primary key default gen_random_uuid(), booking_id uuid not null unique references public.bookings(id) on delete restrict,
+  invoice_number text not null unique, issued_at timestamptz not null default now(), extra_charges numeric(12,2) not null default 0,
+  discount numeric(12,2) not null default 0, gst_amount numeric(12,2) not null default 0, grand_total numeric(12,2) not null,
+  currency char(3) not null, business_details jsonb not null, created_at timestamptz not null default now()
+);
+create index if not exists invoices_issued_at_idx on public.invoices(issued_at desc);
+
+create table if not exists public.audit_logs (
+  id bigint generated always as identity primary key, user_name text not null, action text not null, entity text not null,
+  entity_id text, created_at timestamptz not null default now(), ip inet, details jsonb not null default '{}'::jsonb
+);
+create index if not exists audit_logs_created_at_idx on public.audit_logs(created_at desc);
+create index if not exists audit_logs_action_entity_idx on public.audit_logs(action,entity,created_at desc);
+create index if not exists bookings_reporting_idx on public.bookings(created_at,booking_status,payment_status);
+create index if not exists bookings_occupancy_idx on public.bookings(check_in,check_out,booking_status);
+
+alter table public.business_settings enable row level security;
+alter table public.invoices enable row level security;
+alter table public.audit_logs enable row level security;
+revoke all on public.business_settings, public.invoices, public.audit_logs from public, anon, authenticated;
+grant select,update on public.business_settings to service_role;
+grant select,insert on public.invoices to service_role;
+grant select,insert on public.audit_logs to service_role;
+grant usage,select on sequence public.invoice_number_seq to service_role;
+
+create or replace function public.generate_booking_invoice(target_booking_id uuid, invoice_prefix text default 'KGH')
+returns jsonb language plpgsql security definer set search_path=public as $$
+declare b public.bookings; s public.business_settings; i public.invoices; seq bigint; taxable numeric; tax numeric;
+begin
+  perform pg_advisory_xact_lock(hashtext(target_booking_id::text));
+  select * into i from invoices where booking_id=target_booking_id; if found then return to_jsonb(i); end if;
+  select * into b from bookings where id=target_booking_id; if not found or b.booking_status <> 'Completed' then return null; end if;
+  select * into s from business_settings where id=true; seq := nextval('invoice_number_seq'); taxable := coalesce(b.amount,0); tax := round(taxable*s.gst_percent/100,2);
+  insert into invoices(booking_id,invoice_number,gst_amount,grand_total,currency,business_details)
+  values(b.id,upper(coalesce(nullif(invoice_prefix,''),s.invoice_prefix))||'-'||extract(year from now())::int||'-'||lpad(seq::text,6,'0'),tax,taxable+tax,s.currency,
+    jsonb_build_object('business_name',s.business_name,'gst_number',s.gst_number,'gst_percent',s.gst_percent,'address',s.address,'phone',s.phone,'email',s.email,'invoice_footer',s.invoice_footer,'currency',s.currency,'timezone',s.timezone)) returning * into i;
+  return to_jsonb(i);
+end $$;
+revoke all on function public.generate_booking_invoice(uuid,text) from public,anon,authenticated;
+grant execute on function public.generate_booking_invoice(uuid,text) to service_role;

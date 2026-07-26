@@ -90,6 +90,35 @@ function createSupabaseDb(supabase) {
     async reviews() { return assert(await supabase.from("reviews").select("*").order("created_at", { ascending: false })); },
     async moderateReview(id, status) { return assert(await supabase.from("reviews").update({ status, moderated_at: new Date().toISOString() }).eq("id", id).select().maybeSingle()); },
     async deleteReview(id) { return assert(await supabase.from("reviews").delete().eq("id", id).select().maybeSingle()); }
+    ,async getSettings() { return assert(await supabase.from("business_settings").select("business_name,gst_number,gst_percent,address,phone,email,invoice_footer,invoice_prefix,currency,timezone,logo_metadata,updated_at").eq("id", true).single()); }
+    ,async updateSettings(values) { return assert(await supabase.from("business_settings").update(values).eq("id", true).select("business_name,gst_number,gst_percent,address,phone,email,invoice_footer,invoice_prefix,currency,timezone,logo_metadata,updated_at").single()); }
+    ,async createAuditLog(log) { return assert(await supabase.from("audit_logs").insert(log).select("id").single()); }
+    ,async auditLogs(filters) {
+      const offset = (filters.page - 1) * filters.limit; let q = supabase.from("audit_logs").select("id,user_name,action,entity,entity_id,created_at,ip,details", { count: "exact" }).order("created_at", { ascending: false }).range(offset, offset + filters.limit - 1);
+      if (filters.action) q = q.eq("action", filters.action); if (filters.entity) q = q.eq("entity", filters.entity); if (filters.start_date) q = q.gte("created_at", `${filters.start_date}T00:00:00Z`); if (filters.end_date) q = q.lte("created_at", `${filters.end_date}T23:59:59Z`);
+      const result = await q; if (result.error) throw new Error(result.error.message); return { items: result.data, total: result.count || 0 };
+    }
+    ,async listInvoices(filters) {
+      const offset = (filters.page - 1) * filters.limit; let q = supabase.from("invoices").select("id,invoice_number,booking_id,issued_at,grand_total,gst_amount,currency,created_at", { count: "exact" }).order("issued_at", { ascending: false }).range(offset, offset + filters.limit - 1);
+      if (filters.start_date) q = q.gte("issued_at", `${filters.start_date}T00:00:00Z`); if (filters.end_date) q = q.lte("issued_at", `${filters.end_date}T23:59:59Z`); const result = await q; if (result.error) throw new Error(result.error.message); return { items: result.data, total: result.count || 0 };
+    }
+    ,async invoiceBooking(bookingId) {
+      let q = supabase.from("bookings").select("id,booking_id,customer_name,room_type,check_in,check_out,booking_status,payment_status,payment_type,amount,advance_amount");
+      q = /^[0-9a-f-]{36}$/i.test(bookingId) ? q.eq("id", bookingId) : q.eq("booking_id", bookingId); const booking = assert(await q.maybeSingle()); if (!booking) return null;
+      const invoice = assert(await supabase.from("invoices").select("invoice_number,issued_at,extra_charges,discount,gst_amount,grand_total,business_details").eq("booking_id", booking.id).maybeSingle());
+      const assignment = assert(await supabase.from("booking_room_assignments").select("rooms(room_number)").eq("booking_id", booking.id).order("assigned_at", { ascending: false }).limit(1).maybeSingle()); return { ...booking, ...invoice, room_number: assignment?.rooms?.room_number || null };
+    }
+    ,async createInvoice(bookingId, prefix) { return assert(await supabase.rpc("generate_booking_invoice", { target_booking_id: bookingId, invoice_prefix: prefix })); }
+    ,async reportingBookings(range) { return assert(await supabase.from("bookings").select("id,check_in,check_out,booking_status,payment_status,amount,advance_amount,refund_amount,created_at").gte("created_at", `${range.start_date}T00:00:00Z`).lte("created_at", `${range.end_date}T23:59:59Z`)); }
+    ,async occupancyData(range) {
+      const bookings = assert(await supabase.from("bookings").select("check_in,check_out,booking_status,amount,booking_stays(stay_status)").lt("check_in", range.end_date).gt("check_out", range.start_date));
+      const rooms = await supabase.from("rooms").select("id", { head: true, count: "exact" }).eq("is_active", true); if (rooms.error) throw new Error(rooms.error.message); return { bookings: bookings.map((b) => ({ ...b, stay_status: b.booking_stays?.[0]?.stay_status })), room_count: rooms.count || 0 };
+    }
+    ,async exportRows(dataset, range) {
+      const tables = { bookings: ["bookings", "booking_id,customer_name,room_type,check_in,check_out,booking_status,payment_status,amount"], housekeeping: ["housekeeping_tasks", "task_type,status,assigned_to,created_at,completed_at"], maintenance: ["rooms", "room_number,operational_status,notes,updated_at"], reviews: ["reviews", "customer_name,rating,review,status,created_at"] };
+      if (dataset === "revenue") return this.reportingBookings(range); if (dataset === "occupancy") return (await this.occupancyData(range)).bookings;
+      const [table, fields] = tables[dataset]; let q = supabase.from(table).select(fields); const dateField = dataset === "maintenance" ? "updated_at" : "created_at"; q = q.gte(dateField, `${range.start_date}T00:00:00Z`).lte(dateField, `${range.end_date}T23:59:59Z`).limit(10000); return assert(await q);
+    }
   };
 }
 module.exports = { createSupabaseDb };
