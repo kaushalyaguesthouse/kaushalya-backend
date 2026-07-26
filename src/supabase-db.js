@@ -42,6 +42,15 @@ function createSupabaseDb(supabase) {
     async roomStatus() { return assert(await supabase.from("rooms").select("id,room_number,floor,operational_status,housekeeping_status,notes,is_active,created_at,updated_at,room_types!inner(name)").order("room_number", { ascending: true })); },
     async adminAvailability(start, end, roomType) { const exclusiveEnd = new Date(`${end}T00:00:00.000Z`); exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1); let q = supabase.from("bookings").select("id,booking_id,room_type,check_in,check_out,booking_status").lt("check_in", exclusiveEnd.toISOString().slice(0, 10)).gt("check_out", start).order("check_in", { ascending: true }); if (roomType) q = q.eq("room_type", roomType); return assert(await q); },
     async analyticsBookings() { return assert(await supabase.from("bookings").select("room_type,check_in,check_out,adults,children,booking_status,payment_status,amount,advance_amount,created_at")); },
+    async assignRoom(bookingId, roomId, actor) { return assert(await supabase.rpc("assign_booking_room", { target_booking_id: bookingId, target_room_id: roomId, actor })); },
+    async releaseRoom(bookingId, actor, reason) { return assert(await supabase.rpc("release_booking_room", { target_booking_id: bookingId, actor, reason })); },
+    async roomAssignments(bookingId) {
+      const booking = assert(await supabase.from("bookings").select("id").eq("id", bookingId).maybeSingle());
+      if (!booking) return null;
+      const rows = assert(await supabase.from("booking_room_assignments").select("id,booking_id,room_id,assignment_status,assigned_at,assigned_by,released_at,released_by,release_reason,created_at,updated_at,rooms!inner(id,room_number,room_types!inner(name))").eq("booking_id", bookingId).order("assigned_at", { ascending: false }));
+      const history = rows.map((row) => ({ id: row.id, booking_id: row.booking_id, assignment_status: row.assignment_status, assigned_at: row.assigned_at, assigned_by: row.assigned_by, released_at: row.released_at, released_by: row.released_by, release_reason: row.release_reason, created_at: row.created_at, updated_at: row.updated_at, room: { id: row.rooms.id, room_number: row.rooms.room_number, room_type: row.rooms.room_types.name } }));
+      return { current: history.find((row) => row.assignment_status === "active") || null, history };
+    },
     async booking(id) { return assert(await supabase.from("bookings").select("*").eq("id", id).maybeSingle()); },
     async updateBooking(id, status) { return assert(await supabase.from("bookings").update({ booking_status: status, updated_at: new Date().toISOString() }).eq("id", id).select().single()); },
     async reviews() { return assert(await supabase.from("reviews").select("*").order("created_at", { ascending: false })); },
