@@ -283,3 +283,33 @@ begin
 end $$;
 revoke all on function public.check_out_booking(uuid) from public, anon, authenticated;
 grant execute on function public.check_out_booking(uuid) to service_role;
+
+-- Phase 4.6: atomic housekeeping lifecycle after check-out.
+create or replace function public.transition_housekeeping_task(target_task_id uuid, target_action text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare task public.housekeeping_tasks; r public.rooms; expected_status text; next_status text; active_assignment boolean; checked_in_stay boolean; derived text; transition_time timestamptz;
+begin
+  perform pg_advisory_xact_lock(hashtext(target_task_id::text));
+  select * into task from housekeeping_tasks where id=target_task_id for update;
+  if not found then return jsonb_build_object('success',false,'reason','task_not_found'); end if;
+  select * into r from rooms where id=task.room_id for update;
+  if not found then return jsonb_build_object('success',false,'reason','room_not_found'); end if;
+  if not r.is_active then return jsonb_build_object('success',false,'reason','room_inactive'); end if;
+  if task.status='cancelled' then return jsonb_build_object('success',false,'reason','task_cancelled'); end if;
+  expected_status := case target_action when 'start' then 'pending' when 'complete' then 'cleaning' when 'inspect' then 'completed' end;
+  next_status := case target_action when 'start' then 'cleaning' when 'complete' then 'completed' when 'inspect' then 'inspected' end;
+  if expected_status is null or task.status<>expected_status then return jsonb_build_object('success',false,'reason','invalid_transition'); end if;
+  transition_time := now();
+  update housekeeping_tasks set status=next_status, completed_at=case when target_action='complete' then transition_time else completed_at end where id=task.id returning * into task;
+  if target_action in ('complete','inspect') then
+    update rooms set housekeeping_status=next_status where id=r.id returning * into r;
+  end if;
+  if target_action='inspect' then
+    select exists(select 1 from booking_room_assignments where room_id=r.id and assignment_status='active') into active_assignment;
+    select exists(select 1 from booking_stays s join booking_room_assignments a on a.booking_id=s.booking_id where a.room_id=r.id and s.stay_status='checked_in') into checked_in_stay;
+    derived := case when not r.is_active or r.operational_status='out_of_service' then 'out_of_service' when r.operational_status='maintenance' then 'maintenance' when checked_in_stay then 'occupied' when active_assignment then 'reserved' else 'available' end;
+  end if;
+  return jsonb_build_object('success',true,'task',to_jsonb(task),'room',case when target_action in ('complete','inspect') then to_jsonb(r) else null end,'derived_status',derived);
+end $$;
+revoke all on function public.transition_housekeeping_task(uuid,text) from public, anon, authenticated;
+grant execute on function public.transition_housekeeping_task(uuid,text) to service_role;

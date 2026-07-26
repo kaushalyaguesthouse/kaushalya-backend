@@ -68,6 +68,16 @@ function createSupabaseDb(supabase) {
       if (!booking) return null;
       return assert(await supabase.from("housekeeping_tasks").select("id,booking_id,room_id,task_type,status,assigned_to,notes,created_at,completed_at,updated_at,rooms!inner(room_number)").eq("booking_id", bookingId).order("created_at", { ascending: false }));
     },
+    async listHousekeepingTasks(filters) {
+      const offset = (filters.page - 1) * filters.limit;
+      let q = supabase.from("housekeeping_tasks").select("id,booking_id,room_id,task_type,status,assigned_to,notes,created_at,completed_at,updated_at,rooms!inner(room_number)", { count: "exact" }).order("created_at", { ascending: false }).range(offset, offset + filters.limit - 1);
+      if (filters.status) q = q.eq("status", filters.status);
+      if (filters.room) q = q.eq("room_id", filters.room);
+      const result = await q;
+      if (result.error) throw new Error(result.error.message);
+      return { items: result.data, total: result.count || 0 };
+    },
+    async transitionHousekeepingTask(taskId, action) { return assert(await supabase.rpc("transition_housekeeping_task", { target_task_id: taskId, target_action: action })); },
     async bookingStay(bookingId) {
       const booking = assert(await supabase.from("bookings").select("id").eq("id", bookingId).maybeSingle());
       if (!booking) return null;
