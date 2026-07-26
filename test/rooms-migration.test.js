@@ -83,7 +83,7 @@ test("guest stay migration creates one constrained stay per booking and an atomi
 });
 
 test("guest checkout atomically completes the stay, preserves assignment history, dirties the room, and creates turnover work", () => {
-  const phase45 = migration.split("-- Phase 4.5:")[1];
+  const phase45 = migration.split("-- Phase 4.5:")[1].split("-- Phase 4.6:")[0];
   assert.match(phase45, /create table if not exists public\.housekeeping_tasks/);
   assert.match(phase45, /task_type in \('turnover','stayover','inspection','deep_clean'\)/);
   assert.match(phase45, /status in \('pending','cleaning','completed','inspected','cancelled'\)/);
@@ -99,4 +99,16 @@ test("guest checkout atomically completes the stay, preserves assignment history
   assert.doesNotMatch(phase45, /update booking_room_assignments set[^;]*(?:allocation_range|assigned_at)/);
   assert.doesNotMatch(phase45, /operational_status\s*=/);
   assert.match(phase45, /revoke all on function public\.check_out_booking\(uuid\) from public, anon, authenticated/);
+});
+
+test("Phase 4.6 enforces atomic housekeeping transitions and availability conditions", () => {
+  const phase46 = migration.split("-- Phase 4.6:")[1];
+  assert.match(phase46, /create or replace function public\.transition_housekeeping_task/);
+  assert.match(phase46, /when 'start' then 'pending'[\s\S]*when 'complete' then 'cleaning'[\s\S]*when 'inspect' then 'completed'/);
+  assert.match(phase46, /completed_at=case when target_action='complete' then transition_time/);
+  assert.match(phase46, /update rooms set housekeeping_status=next_status/);
+  assert.match(phase46, /assignment_status='active'/);
+  assert.match(phase46, /s\.stay_status='checked_in'/);
+  assert.match(phase46, /when active_assignment then 'reserved' else 'available'/);
+  assert.doesNotMatch(phase46, /delete from housekeeping_tasks/);
 });
