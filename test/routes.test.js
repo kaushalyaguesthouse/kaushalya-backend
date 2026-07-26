@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createApp } = require("../src/app");
+const { verifyAdminToken } = require("../src/core");
 
 const config = { origins: ["http://localhost:3000"], rooms: { Standard: { price: 1800, inventory: 2 } }, maxStayNights: 90, maxGuests: 10, paymentMethods: ["Pay Later", "Razorpay"], adminSecret: "admin-signing-secret", adminBootstrapKey: "bootstrap-secret", razorpaySecret: "razorpay-secret", razorpayKeyId: "rzp_test_key", contact: {} };
 const bookingId = "123e4567-e89b-12d3-a456-426614174000";
@@ -33,7 +34,14 @@ test("health, public reviews, validation, and 404 routes smoke test", () => with
 
 test("admin login rejects a bad key and issues a signed token", () => withServer(async (url) => {
   let response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ admin_key: "wrong" }) }); assert.equal(response.status, 401);
-  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bootstrapKey: "  bootstrap-secret  " }) }); assert.equal(response.status, 200); assert.match((await response.json()).token, /^[^.]+\.[^.]+$/);
+  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bootstrapKey: "  bootstrap-secret  " }) });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(Object.keys(body).sort(), ["accessToken", "success"]);
+  assert.equal(body.success, true);
+  assert.match(body.accessToken, /^[^.]+\.[^.]+$/);
+  assert.equal(verifyAdminToken(body.accessToken, config.adminSecret), true);
+  assert.equal(verifyAdminToken(body.accessToken, "different-session-secret"), false);
 }));
 
 test("admin login comparison is case-sensitive and safely rejects different UTF-8 byte lengths", () => withServer(async (url) => {
@@ -60,8 +68,8 @@ test("admin login logs secret-safe diagnostics", async () => {
 test("admin resources require auth and support booking and review moderation", () => withServer(async (url) => {
   let response = await fetch(`${url}/admin/bookings`); assert.equal(response.status, 401);
   response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "x-admin-key": "bootstrap-secret" } });
-  const { token } = await response.json();
-  const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  const { accessToken } = await response.json();
+  const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json" };
 
   response = await fetch(`${url}/admin/bookings`, { headers }); assert.equal(response.status, 200); assert.equal((await response.json()).bookings.length, 1);
   response = await fetch(`${url}/admin/bookings/not-an-id`, { headers }); assert.equal(response.status, 400);
