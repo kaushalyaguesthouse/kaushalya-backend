@@ -9,7 +9,9 @@ function safeDiagnostic(value) {
   if (value == null) return null;
   return String(value)
     .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(/\b(authorization|cookie|apikey|api[_-]?key|service[_-]?role[_-]?key|token|secret|password|signature)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
     .replace(/([?&](?:apikey|key|token|secret|signature)=)[^&\s]+/gi, "$1[REDACTED]")
+    .replace(/\b(?:postgres(?:ql)?):\/\/[^\s]+/gi, "[REDACTED_CONNECTION_STRING]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]");
 }
 
@@ -38,23 +40,40 @@ function healthDiagnostic(error, result = {}) {
   };
 }
 
-function createSupabaseDb(supabase, logger = console) {
+function publicHealthDiagnostic(error, result = {}) {
+  if (!error) return { success: true, failure_type: null, code: null, message: null, details: null, status: result.status ?? 200 };
+  const diagnostic = healthDiagnostic(error, result);
   return {
+    success: false,
+    failure_type: diagnostic.failure_type,
+    code: diagnostic.error.code,
+    message: diagnostic.error.message,
+    details: diagnostic.error.details,
+    status: diagnostic.http_status
+  };
+}
+
+function createSupabaseDb(supabase, logger = console) {
+  const databaseDiagnostic = async () => {
+    try {
+      const result = await supabase.from("bookings").select("id").limit(1);
+      return publicHealthDiagnostic(result.error, result);
+    } catch (error) {
+      return publicHealthDiagnostic(error);
+    }
+  };
+  return {
+    databaseDiagnostic,
     async health() {
-      try {
-        // Fetch at most one row instead of issuing a HEAD/count request. Some
-        // Supabase gateways reject HEAD even though ordinary REST queries work,
-        // which made the readiness check report a false database outage.
-        const result = await supabase.from("bookings").select("id").limit(1);
-        if (result.error) {
-          logger.error?.("DATABASE_HEALTH_CHECK_FAILED", healthDiagnostic(result.error, result));
-          return false;
-        }
-        return true;
-      } catch (error) {
-        logger.error?.("DATABASE_HEALTH_CHECK_FAILED", healthDiagnostic(error));
-        return false;
-      }
+      // Both health and the authenticated diagnostic endpoint execute this same
+      // minimal GET query. Log synchronously before reporting an unhealthy DB.
+      const diagnostic = await databaseDiagnostic();
+      if (!diagnostic.success) logger.error?.("DATABASE_HEALTH_CHECK_FAILED", {
+        failure_type: diagnostic.failure_type,
+        error: { code: diagnostic.code, message: diagnostic.message, details: diagnostic.details },
+        http_status: diagnostic.status
+      });
+      return diagnostic.success;
     },
     async availability(room, start, end, inventory) { const data = assert(await supabase.from("bookings").select("id").eq("room_type", room).in("booking_status", ["Pending", "Confirmed"]).lt("check_in", end).gt("check_out", start)); return Math.max(0, inventory - data.length); },
     async findOrderByKey(key) { return assert(await supabase.from("payment_orders").select("*").eq("idempotency_key", key).maybeSingle()); },
@@ -169,4 +188,4 @@ function createSupabaseDb(supabase, logger = console) {
     }
   };
 }
-module.exports = { classifyHealthFailure, createSupabaseDb, healthDiagnostic };
+module.exports = { classifyHealthFailure, createSupabaseDb, healthDiagnostic, publicHealthDiagnostic, safeDiagnostic };
