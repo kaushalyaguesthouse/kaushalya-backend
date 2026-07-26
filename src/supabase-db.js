@@ -13,6 +13,7 @@ function createSupabaseDb(supabase) {
     async createReview(review) { return assert(await supabase.from("reviews").insert({ ...review, status: "pending" })); },
     async approvedReviews() { return assert(await supabase.from("reviews").select("id,customer_name,rating,review,created_at").eq("status", "approved").order("created_at", { ascending: false }).limit(100)); },
     async bookings(query) { let q = supabase.from("bookings").select("*").order("created_at", { ascending: false }).limit(Math.min(Number(query.limit) || 100, 500)); if (query.status) q = q.eq("booking_status", query.status); return assert(await q); },
+    async adminAvailability(start, end, roomType) { const exclusiveEnd = new Date(`${end}T00:00:00.000Z`); exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1); let q = supabase.from("bookings").select("id,booking_id,room_type,check_in,check_out,booking_status").lt("check_in", exclusiveEnd.toISOString().slice(0, 10)).gt("check_out", start).order("check_in", { ascending: true }); if (roomType) q = q.eq("room_type", roomType); return assert(await q); },
     async booking(id) { return assert(await supabase.from("bookings").select("*").eq("id", id).maybeSingle()); },
     async updateBooking(id, status) { return assert(await supabase.from("bookings").update({ booking_status: status, updated_at: new Date().toISOString() }).eq("id", id).select().single()); },
     async reviews() { return assert(await supabase.from("reviews").select("*").order("created_at", { ascending: false })); },
