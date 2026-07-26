@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
-const { createAvailabilityReport, validateAvailabilityQuery, validateBooking, validateReview, verifySignature, signAdminToken, verifyAdminToken } = require("./core");
+const { createAnalyticsSummary, createAvailabilityReport, validateAvailabilityQuery, validateBooking, validateReview, verifySignature, signAdminToken, verifyAdminToken } = require("./core");
 
 function createRateLimiter(limit = 120, windowMs = 60000) {
   const clients = new Map();
@@ -188,6 +188,10 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       const bookings = await db.adminAvailability(req.query.start_date, req.query.end_date, req.query.room_type);
       return res.json({ success: true, ...createAvailabilityReport(bookings, config.rooms, req.query.start_date, req.query.end_date, req.query.room_type) });
     } catch (e) { next(e); }
+  });
+  app.get("/admin/analytics/summary", admin, async (_req, res, next) => {
+    try { return res.json({ success: true, ...createAnalyticsSummary(await db.analyticsBookings(), config.rooms) }); }
+    catch (e) { next(e); }
   });
   app.get("/admin/bookings/:id", admin, validateUuid, async (req, res, next) => { try { const booking = await db.booking(req.params.id); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
   app.patch("/admin/bookings/:id/status", admin, validateUuid, async (req, res, next) => { try { if (!BOOKING_STATUSES.includes(req.body?.status)) return fail(res, 422, "Invalid booking status.", { status: "Status must be Pending, Confirmed, Cancelled, or Completed." }); const booking = await db.updateBooking(req.params.id, req.body.status); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
