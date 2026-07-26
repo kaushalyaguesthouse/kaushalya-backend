@@ -242,6 +242,37 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     try { return res.json({ success: true, ...createAnalyticsSummary(await db.analyticsBookings(), config.rooms) }); }
     catch (e) { next(e); }
   });
+  app.post("/admin/bookings/:id/assign-room", admin, validateUuid, async (req, res, next) => {
+    try {
+      if (!UUID_RE.test(String(req.body?.room_id || ""))) return fail(res, 422, "A valid room_id is required.", { room_id: "room_id must be a UUID." });
+      const result = await db.assignRoom(req.params.id, req.body.room_id, "admin");
+      if (!result?.success) {
+        const failures = {
+          booking_not_found: [404, "Booking not found."], room_not_found: [404, "Room not found."],
+          booking_status: [409, "Only Pending or Confirmed bookings may be assigned a room."],
+          room_inactive: [409, "The room is inactive."], room_not_operational: [409, "The room is not operational."],
+          room_type_mismatch: [409, "The room type does not match the booking."], already_assigned: [409, "The booking already has an active room assignment."]
+        };
+        const [status, message] = failures[result?.reason] || [409, "The room could not be assigned."];
+        return fail(res, status, message);
+      }
+      return res.status(201).json({ success: true, booking_id: req.params.id, room: result.room, assigned_at: result.assigned_at, assignment_status: "active" });
+    } catch (e) { next(e); }
+  });
+  app.delete("/admin/bookings/:id/assign-room", admin, validateUuid, async (req, res, next) => {
+    try {
+      const result = await db.releaseRoom(req.params.id, "admin", typeof req.body?.release_reason === "string" ? req.body.release_reason.slice(0, 500) : null);
+      if (!result?.success) return fail(res, result?.reason === "booking_not_found" ? 404 : 409, result?.reason === "booking_not_found" ? "Booking not found." : "The booking has no active room assignment.");
+      return res.json({ success: true });
+    } catch (e) { next(e); }
+  });
+  app.get("/admin/bookings/:id/assignment", admin, validateUuid, async (req, res, next) => {
+    try {
+      const result = await db.roomAssignments(req.params.id);
+      if (!result) return fail(res, 404, "Booking not found.");
+      return res.json({ success: true, current: result.current, history: result.history });
+    } catch (e) { next(e); }
+  });
   app.get("/admin/bookings/:id", admin, validateUuid, async (req, res, next) => { try { const booking = await db.booking(req.params.id); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
   app.patch("/admin/bookings/:id/status", admin, validateUuid, async (req, res, next) => { try { if (!BOOKING_STATUSES.includes(req.body?.status)) return fail(res, 422, "Invalid booking status.", { status: "Status must be Pending, Confirmed, Cancelled, or Completed." }); const booking = await db.updateBooking(req.params.id, req.body.status); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
   app.get("/admin/reviews", admin, async (_req, res, next) => { try { res.json({ success: true, reviews: await db.reviews() }); } catch (e) { next(e); } });

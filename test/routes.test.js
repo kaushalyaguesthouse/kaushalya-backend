@@ -177,3 +177,43 @@ test("admin login is rate limited", () => withServer(async (url) => {
   }
   assert.equal(response.status, 429);
 }));
+
+test("manual room assignment enforces rules, releases history, and stays privacy-safe", () => {
+  const roomId = "123e4567-e89b-12d3-a456-426614174010";
+  const records = [];
+  let bookingStatus = "Confirmed";
+  let room = { id: roomId, room_number: "101", room_type: "Standard", is_active: true, operational_status: "operational" };
+  const assignmentDb = {
+    ...db,
+    async assignRoom(id, requestedRoom) {
+      if (bookingStatus === "Cancelled" || bookingStatus === "Completed") return { success: false, reason: "booking_status" };
+      if (!room.is_active) return { success: false, reason: "room_inactive" };
+      if (room.room_type !== "Standard") return { success: false, reason: "room_type_mismatch" };
+      if (records.some((entry) => entry.assignment_status === "active")) return { success: false, reason: "already_assigned" };
+      const assigned_at = "2026-07-26T12:00:00.000Z";
+      records.push({ id: `assignment-${records.length}`, booking_id: id, assignment_status: "active", assigned_at, assigned_by: "admin", released_at: null, released_by: null, release_reason: null, room: { id: requestedRoom, room_number: room.room_number, room_type: room.room_type } });
+      return { success: true, assigned_at, room: records.at(-1).room };
+    },
+    async releaseRoom() { const active = records.find((entry) => entry.assignment_status === "active"); if (!active) return { success: false, reason: "not_assigned" }; Object.assign(active, { assignment_status: "released", released_at: "2026-07-26T13:00:00.000Z", released_by: "admin" }); return { success: true }; },
+    async roomAssignments() { const history = records.map((entry) => ({ ...entry })); return { current: history.find((entry) => entry.assignment_status === "active") || null, history }; }
+  };
+  return (async () => {
+    const server = createApp({ config, db: assignmentDb, razorpay, logger: { error() {}, info() {} } }).listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const url = `http://127.0.0.1:${server.address().port}`;
+      let response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room_id: roomId }) }); assert.equal(response.status, 401);
+      response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "x-admin-key": "bootstrap-secret" } }); const { accessToken } = await response.json();
+      const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json" };
+      room = { ...room, room_type: "Deluxe" }; response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: roomId }) }); assert.equal(response.status, 409);
+      room = { ...room, room_type: "Standard", is_active: false }; response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: roomId }) }); assert.equal(response.status, 409);
+      room = { ...room, is_active: true }; bookingStatus = "Cancelled"; response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: roomId }) }); assert.equal(response.status, 409);
+      bookingStatus = "Completed"; response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: roomId }) }); assert.equal(response.status, 409);
+      bookingStatus = "Confirmed"; response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: roomId }) }); assert.equal(response.status, 201); assert.equal((await response.json()).assignment_status, "active");
+      response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "POST", headers, body: JSON.stringify({ room_id: roomId }) }); assert.equal(response.status, 409);
+      response = await fetch(`${url}/admin/bookings/${bookingId}/assign-room`, { method: "DELETE", headers }); assert.deepEqual(await response.json(), { success: true });
+      response = await fetch(`${url}/admin/bookings/${bookingId}/assignment`, { headers }); const body = await response.json(); assert.equal(body.current, null); assert.equal(body.history.length, 1); assert.equal(body.history[0].assignment_status, "released");
+      for (const secret of ["guest@example.com", "9999999999", "pay_private", "razorpay", "special_request"]) assert.equal(JSON.stringify(body).toLowerCase().includes(secret), false);
+    } finally { await new Promise((resolve) => server.close(resolve)); }
+  })();
+});

@@ -109,3 +109,52 @@ begin
 end $$;
 revoke all on function public.create_booking_atomic(jsonb, integer) from public, anon, authenticated;
 grant execute on function public.create_booking_atomic(jsonb, integer) to service_role;
+
+-- Phase 4.2: append-only physical-room assignment history.
+create table if not exists public.booking_room_assignments (
+  id uuid primary key default gen_random_uuid(),
+  booking_id uuid not null references public.bookings(id) on update cascade on delete restrict,
+  room_id uuid not null references public.rooms(id) on update cascade on delete restrict,
+  assignment_status text not null default 'active' check (assignment_status in ('active','released')),
+  assigned_at timestamptz not null default now(), assigned_by text not null,
+  released_at timestamptz, released_by text, release_reason text check (release_reason is null or char_length(release_reason) <= 500),
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  check ((assignment_status = 'active' and released_at is null and released_by is null) or (assignment_status = 'released' and released_at is not null and released_by is not null))
+);
+create unique index if not exists booking_room_assignments_one_active_idx on public.booking_room_assignments(booking_id) where assignment_status = 'active';
+create index if not exists booking_room_assignments_booking_history_idx on public.booking_room_assignments(booking_id, assigned_at desc);
+create index if not exists booking_room_assignments_room_idx on public.booking_room_assignments(room_id);
+drop trigger if exists booking_room_assignments_set_updated_at on public.booking_room_assignments;
+create trigger booking_room_assignments_set_updated_at before update on public.booking_room_assignments for each row execute function public.set_updated_at();
+
+create or replace function public.assign_booking_room(target_booking_id uuid, target_room_id uuid, actor text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare b public.bookings; r record; a public.booking_room_assignments;
+begin
+  perform pg_advisory_xact_lock(hashtext(target_booking_id::text));
+  select * into b from bookings where id=target_booking_id;
+  if not found then return jsonb_build_object('success',false,'reason','booking_not_found'); end if;
+  select rooms.*, room_types.name as type_name into r from rooms join room_types on room_types.id=rooms.room_type_id where rooms.id=target_room_id;
+  if not found then return jsonb_build_object('success',false,'reason','room_not_found'); end if;
+  if b.booking_status not in ('Pending','Confirmed') then return jsonb_build_object('success',false,'reason','booking_status'); end if;
+  if not r.is_active then return jsonb_build_object('success',false,'reason','room_inactive'); end if;
+  if r.operational_status <> 'operational' then return jsonb_build_object('success',false,'reason','room_not_operational'); end if;
+  if r.type_name <> b.room_type then return jsonb_build_object('success',false,'reason','room_type_mismatch'); end if;
+  if exists(select 1 from booking_room_assignments where booking_id=target_booking_id and assignment_status='active') then return jsonb_build_object('success',false,'reason','already_assigned'); end if;
+  insert into booking_room_assignments(booking_id,room_id,assigned_by) values(target_booking_id,target_room_id,actor) returning * into a;
+  return jsonb_build_object('success',true,'assigned_at',a.assigned_at,'room',jsonb_build_object('id',r.id,'room_number',r.room_number,'room_type',r.type_name));
+end $$;
+
+create or replace function public.release_booking_room(target_booking_id uuid, actor text, reason text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare assignment_id uuid;
+begin
+  perform pg_advisory_xact_lock(hashtext(target_booking_id::text));
+  if not exists(select 1 from bookings where id=target_booking_id) then return jsonb_build_object('success',false,'reason','booking_not_found'); end if;
+  select id into assignment_id from booking_room_assignments where booking_id=target_booking_id and assignment_status='active' for update;
+  if not found then return jsonb_build_object('success',false,'reason','not_assigned'); end if;
+  update booking_room_assignments set assignment_status='released',released_at=now(),released_by=actor,release_reason=reason where id=assignment_id;
+  return jsonb_build_object('success',true);
+end $$;
+revoke all on function public.assign_booking_room(uuid,uuid,text), public.release_booking_room(uuid,text,text) from public, anon, authenticated;
+grant execute on function public.assign_booking_room(uuid,uuid,text), public.release_booking_room(uuid,text,text) to service_role;
