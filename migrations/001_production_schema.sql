@@ -1,6 +1,44 @@
 -- Additive/idempotent production migration. Run in the Supabase SQL editor.
 create extension if not exists pgcrypto;
 
+-- Phase 4.1: physical-room inventory only. It is intentionally not connected to bookings.
+create table if not exists public.room_types (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique check (char_length(trim(name)) between 1 and 100),
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create table if not exists public.rooms (
+  id uuid primary key default gen_random_uuid(),
+  room_number text not null unique check (char_length(trim(room_number)) between 1 and 20),
+  room_type_id uuid not null references public.room_types(id) on update cascade on delete restrict,
+  floor integer not null check (floor >= 0),
+  operational_status text not null default 'operational' check (operational_status in ('operational','maintenance','out_of_service')),
+  housekeeping_status text not null default 'clean' check (housekeeping_status in ('clean','dirty','cleaning')),
+  notes text check (notes is null or char_length(notes) <= 2000),
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists rooms_room_type_idx on public.rooms(room_type_id);
+create index if not exists rooms_status_idx on public.rooms(operational_status, housekeeping_status, is_active);
+create index if not exists rooms_floor_idx on public.rooms(floor, room_number);
+
+create or replace function public.set_updated_at() returns trigger language plpgsql as $$
+begin new.updated_at = now(); return new; end $$;
+drop trigger if exists room_types_set_updated_at on public.room_types;
+create trigger room_types_set_updated_at before update on public.room_types for each row execute function public.set_updated_at();
+drop trigger if exists rooms_set_updated_at on public.rooms;
+create trigger rooms_set_updated_at before update on public.rooms for each row execute function public.set_updated_at();
+
+insert into public.room_types(name) values ('Standard'), ('Deluxe') on conflict (name) do nothing;
+insert into public.rooms(room_number, room_type_id, floor)
+select seed.room_number, room_types.id, seed.floor
+from (values ('101', 'Standard', 1), ('102', 'Standard', 1), ('201', 'Deluxe', 2), ('202', 'Deluxe', 2)) seed(room_number, type_name, floor)
+join public.room_types on room_types.name = seed.type_name
+on conflict (room_number) do nothing;
+
 create table if not exists public.payment_orders (
   id uuid primary key default gen_random_uuid(), idempotency_key text not null unique,
   razorpay_order_id text not null unique, razorpay_payment_id text unique, razorpay_signature text,

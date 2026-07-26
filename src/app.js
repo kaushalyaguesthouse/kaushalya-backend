@@ -17,6 +17,36 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const BOOKING_STATUSES = ["Pending", "Confirmed", "Cancelled", "Completed"];
 const ADMIN_BOOKING_FIELDS = ["id", "booking_id", "customer_name", "phone", "email", "room_type", "check_in", "check_out", "adults", "children", "booking_status", "payment_status", "amount", "advance_amount", "created_at"];
+const OPERATIONAL_STATUSES = ["operational", "maintenance", "out_of_service"];
+const HOUSEKEEPING_STATUSES = ["clean", "dirty", "cleaning"];
+const ROOM_FIELDS = ["id", "room_number", "floor", "operational_status", "housekeeping_status", "notes", "is_active", "created_at", "updated_at"];
+
+function deriveRoomStatus(room) {
+  if (!room.is_active || room.operational_status === "out_of_service") return "Out of Service";
+  if (room.operational_status === "maintenance") return "Maintenance";
+  if (room.housekeeping_status !== "clean") return "Cleaning";
+  return "Available";
+}
+
+function publicRoom(room) {
+  const roomType = room.room_type || room.room_types;
+  return { ...Object.fromEntries(ROOM_FIELDS.map((field) => [field, room[field]])), room_type: typeof roomType === "string" ? roomType : roomType?.name, derived_status: deriveRoomStatus(room) };
+}
+
+function validateRoomsQuery(query) {
+  const errors = {};
+  const integer = (name, fallback, maximum) => {
+    if (query[name] == null || query[name] === "") return fallback;
+    if (!/^\d+$/.test(String(query[name])) || Number(query[name]) < 1) errors[name] = `${name} must be an integer greater than or equal to 1.`;
+    else if (maximum && Number(query[name]) > maximum) errors[name] = `${name} must not exceed ${maximum}.`;
+    return Number(query[name]);
+  };
+  const filters = { room_type: String(query.room_type || "").trim(), operational_status: String(query.operational_status || "").trim(), housekeeping_status: String(query.housekeeping_status || "").trim(), is_active: query.is_active == null || query.is_active === "" ? "" : String(query.is_active).toLowerCase(), page: integer("page", 1), limit: integer("limit", 25, 100) };
+  if (filters.operational_status && !OPERATIONAL_STATUSES.includes(filters.operational_status)) errors.operational_status = "Invalid operational status.";
+  if (filters.housekeeping_status && !HOUSEKEEPING_STATUSES.includes(filters.housekeeping_status)) errors.housekeeping_status = "Invalid housekeeping status.";
+  if (filters.is_active && !["true", "false"].includes(filters.is_active)) errors.is_active = "is_active must be true or false.";
+  return { valid: Object.keys(errors).length === 0, errors, filters };
+}
 
 function isDate(value) {
   if (!DATE_RE.test(value)) return false;
@@ -178,6 +208,25 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       const total = Array.isArray(result) ? items.length : result.total;
       const { page, limit, ...filters } = validation.filters;
       return res.json({ success: true, items, bookings: items, pagination: { page, limit, total, total_pages: Math.ceil(total / limit) }, filters });
+    } catch (e) { next(e); }
+  });
+  app.get("/admin/rooms", admin, async (req, res, next) => {
+    try {
+      const validation = validateRoomsQuery(req.query);
+      if (!validation.valid) return fail(res, 422, "Invalid room filters.", validation.errors);
+      const result = await db.rooms(validation.filters);
+      const items = result.items.map(publicRoom);
+      const { page, limit, ...filters } = validation.filters;
+      return res.json({ success: true, items, rooms: items, pagination: { page, limit, total: result.total, total_pages: Math.ceil(result.total / limit) }, filters });
+    } catch (e) { next(e); }
+  });
+  app.get("/admin/rooms/status", admin, async (_req, res, next) => {
+    try {
+      const rooms = (await db.roomStatus()).map(publicRoom);
+      const summary = { available: 0, occupied: 0, reserved: 0, maintenance: 0, cleaning: 0, out_of_service: 0 };
+      const keys = { Available: "available", Occupied: "occupied", Reserved: "reserved", Maintenance: "maintenance", Cleaning: "cleaning", "Out of Service": "out_of_service" };
+      for (const room of rooms) summary[keys[room.derived_status]] += 1;
+      return res.json({ success: true, rooms, summary, available_count: summary.available, occupied_count: summary.occupied, reserved_count: summary.reserved, maintenance_count: summary.maintenance, cleaning_count: summary.cleaning, out_of_service_count: summary.out_of_service });
     } catch (e) { next(e); }
   });
   app.get("/admin/availability", admin, async (req, res, next) => {

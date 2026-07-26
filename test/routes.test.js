@@ -7,6 +7,13 @@ const config = { origins: ["http://localhost:3000"], rooms: { Standard: { price:
 const bookingId = "123e4567-e89b-12d3-a456-426614174000";
 const reviewId = "123e4567-e89b-12d3-a456-426614174001";
 let receivedBookingFilters;
+let receivedRoomFilters;
+const roomRows = [
+  { id: "room-101", room_number: "101", room_types: { name: "Standard" }, floor: 1, operational_status: "operational", housekeeping_status: "clean", notes: null, is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", guest_name: "Private Guest", payment_id: "pay_private" },
+  { id: "room-102", room_number: "102", room_types: { name: "Standard" }, floor: 1, operational_status: "maintenance", housekeeping_status: "clean", notes: "Inspect lock", is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+  { id: "room-201", room_number: "201", rooms_types: { name: "Deluxe" }, room_type: "Deluxe", floor: 2, operational_status: "operational", housekeeping_status: "dirty", notes: null, is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+  { id: "room-202", room_number: "202", room_types: { name: "Deluxe" }, floor: 2, operational_status: "operational", housekeeping_status: "clean", notes: null, is_active: false, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }
+];
 const db = {
   health: async () => true,
   approvedReviews: async () => [{ id: "1", customer_name: "Guest", rating: 5, review: "Excellent stay", created_at: "2026-01-01" }],
@@ -15,6 +22,8 @@ const db = {
     receivedBookingFilters = filters;
     return { items: [{ id: bookingId, booking_id: "KGH-1", customer_name: "Guest", phone: "9999999999", special_request: "private", razorpay_payment_id: "pay_private" }], total: 51 };
   },
+  rooms: async (filters) => { receivedRoomFilters = filters; return { items: roomRows.slice(0, 2), total: 4 }; },
+  roomStatus: async () => roomRows,
   adminAvailability: async () => [{ id: bookingId, booking_id: "KGH-1", room_type: "Standard", check_in: "2026-08-01", check_out: "2026-08-03", booking_status: "Confirmed", customer_name: "Must not leak" }],
   booking: async (id) => id === bookingId ? { id } : null,
   updateBooking: async (id, status) => id === bookingId ? { id, booking_status: status } : null,
@@ -125,6 +134,40 @@ test("admin availability requires auth, validates its range, and returns a priva
   assert.match(body.generated_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.deepEqual(Object.keys(body.bookings[0]).sort(), ["booking_id", "booking_status", "check_in", "check_out", "id", "room_type"]);
   assert.equal(JSON.stringify(body).includes("Must not leak"), false);
+}));
+
+test("admin rooms requires authentication, validates filters, and paginates a privacy-safe projection", () => withServer(async (url) => {
+  let response = await fetch(`${url}/admin/rooms`);
+  assert.equal(response.status, 401);
+  response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "x-admin-key": "bootstrap-secret" } });
+  const { accessToken } = await response.json();
+  const headers = { authorization: `Bearer ${accessToken}` };
+  for (const query of ["page=0", "page=1.5", "limit=101", "operational_status=closed", "housekeeping_status=unknown", "is_active=yes"]) {
+    response = await fetch(`${url}/admin/rooms?${query}`, { headers });
+    assert.equal(response.status, 422, query);
+  }
+  response = await fetch(`${url}/admin/rooms?room_type=Standard&operational_status=operational&housekeeping_status=clean&is_active=true&page=2&limit=2`, { headers });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(receivedRoomFilters, { room_type: "Standard", operational_status: "operational", housekeeping_status: "clean", is_active: "true", page: 2, limit: 2 });
+  assert.deepEqual(body.pagination, { page: 2, limit: 2, total: 4, total_pages: 2 });
+  assert.equal(body.items[0].room_type, "Standard");
+  assert.equal(body.items[0].derived_status, "Available");
+  assert.deepEqual(body.items, body.rooms);
+  assert.equal(JSON.stringify(body).includes("Private Guest"), false);
+  assert.equal(JSON.stringify(body).includes("pay_private"), false);
+}));
+
+test("admin room status derives operational and housekeeping states without booking data", () => withServer(async (url) => {
+  let response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "x-admin-key": "bootstrap-secret" } });
+  const { accessToken } = await response.json();
+  response = await fetch(`${url}/admin/rooms/status`, { headers: { authorization: `Bearer ${accessToken}` } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.rooms.map((room) => room.derived_status), ["Available", "Maintenance", "Cleaning", "Out of Service"]);
+  assert.deepEqual(body.summary, { available: 1, occupied: 0, reserved: 0, maintenance: 1, cleaning: 1, out_of_service: 1 });
+  assert.deepEqual([body.available_count, body.occupied_count, body.reserved_count, body.maintenance_count, body.cleaning_count, body.out_of_service_count], [1, 0, 0, 1, 1, 1]);
+  assert.equal(JSON.stringify(body).includes("Private Guest"), false);
 }));
 
 test("admin login is rate limited", () => withServer(async (url) => {
