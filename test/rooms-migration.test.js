@@ -78,6 +78,25 @@ test("guest stay migration creates one constrained stay per booking and an atomi
   assert.match(migration, /active_count <> 1/);
   assert.match(migration, /r\.housekeeping_status not in \('clean','inspected'\)/);
   assert.match(migration, /update booking_stays set stay_status='checked_in',checked_in_at=checked_in/);
-  assert.doesNotMatch(migration.split("-- Phase 4.4:")[1], /update booking_room_assignments/);
+  assert.doesNotMatch(migration.split("-- Phase 4.4:")[1].split("-- Phase 4.5:")[0], /update booking_room_assignments/);
   assert.match(migration, /revoke all on function public\.check_in_booking\(uuid\) from public, anon, authenticated/);
+});
+
+test("guest checkout atomically completes the stay, preserves assignment history, dirties the room, and creates turnover work", () => {
+  const phase45 = migration.split("-- Phase 4.5:")[1];
+  assert.match(phase45, /create table if not exists public\.housekeeping_tasks/);
+  assert.match(phase45, /task_type in \('turnover','stayover','inspection','deep_clean'\)/);
+  assert.match(phase45, /status in \('pending','cleaning','completed','inspected','cancelled'\)/);
+  assert.match(phase45, /create or replace function public\.check_out_booking/);
+  assert.match(phase45, /s\.stay_status is distinct from 'checked_in'/);
+  assert.match(phase45, /b\.booking_status <> 'Confirmed'/);
+  assert.match(phase45, /active_count <> 1/);
+  assert.match(phase45, /update booking_stays set stay_status='checked_out',checked_out_at=checkout_time/);
+  assert.match(phase45, /update bookings set booking_status='Completed'/);
+  assert.match(phase45, /update booking_room_assignments set assignment_status='released',released_at=checkout_time/);
+  assert.match(phase45, /update rooms set housekeeping_status='dirty'/);
+  assert.match(phase45, /insert into housekeeping_tasks\(booking_id,room_id,task_type,status\) values\(target_booking_id,r\.id,'turnover','pending'\)/);
+  assert.doesNotMatch(phase45, /update booking_room_assignments set[^;]*(?:allocation_range|assigned_at)/);
+  assert.doesNotMatch(phase45, /operational_status\s*=/);
+  assert.match(phase45, /revoke all on function public\.check_out_booking\(uuid\) from public, anon, authenticated/);
 });
