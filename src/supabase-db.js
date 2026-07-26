@@ -15,8 +15,9 @@ function createSupabaseDb(supabase) {
     async bookings(query) { let q = supabase.from("bookings").select("*").order("created_at", { ascending: false }).limit(Math.min(Number(query.limit) || 100, 500)); if (query.status) q = q.eq("booking_status", query.status); return assert(await q); },
     async booking(id) { return assert(await supabase.from("bookings").select("*").eq("id", id).maybeSingle()); },
     async updateBooking(id, status) { return assert(await supabase.from("bookings").update({ booking_status: status, updated_at: new Date().toISOString() }).eq("id", id).select().single()); },
-    async pendingReviews() { return assert(await supabase.from("reviews").select("*").eq("status", "pending").order("created_at")); },
-    async moderateReview(id, status) { return assert(await supabase.from("reviews").update({ status, moderated_at: new Date().toISOString() }).eq("id", id).select().single()); }
+    async reviews() { return assert(await supabase.from("reviews").select("*").order("created_at", { ascending: false })); },
+    async moderateReview(id, status) { return assert(await supabase.from("reviews").update({ status, moderated_at: new Date().toISOString() }).eq("id", id).select().maybeSingle()); },
+    async deleteReview(id) { return assert(await supabase.from("reviews").delete().eq("id", id).select().maybeSingle()); }
   };
 }
 module.exports = { createSupabaseDb };

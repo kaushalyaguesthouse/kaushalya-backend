@@ -9,11 +9,11 @@ Production-oriented Express API backed by PostgreSQL through Supabase. It provid
 3. Run `migrations/001_production_schema.sql` once in the Supabase SQL editor. It is additive and uses `IF NOT EXISTS`; back up production before every schema migration. The migration creates generated UUID primary keys, payment-order uniqueness, booking idempotency/payment uniqueness, availability/review indexes, and an advisory-lock-protected booking function.
 4. Start with `npm start`. Render should use the same start command and `/health` as its health-check path.
 
-The server refuses to start when security-critical configuration is missing. `SUPABASE_ANON_KEY` remains a development compatibility fallback, but production requires `SUPABASE_SERVICE_ROLE_KEY` because public RLS credentials must not be granted administrative access.
+The server refuses to start when security-critical configuration is missing. `SUPABASE_ANON_KEY` remains a development compatibility fallback, but production requires `SUPABASE_SERVICE_ROLE_KEY` because public RLS credentials must not be granted administrative access. Generate a unique admin signing secret of at least 32 characters (for example, `openssl rand -base64 48`); never reuse the bootstrap key.
 
 ## Configuration
 
-All variables and safe examples are in `.env.example`. Required: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `ADMIN_TOKEN_SECRET`, and `ADMIN_BOOTSTRAP_KEY`. `ALLOWED_ORIGINS` is a comma-separated exact allowlist.
+All variables and safe examples are in `.env.example`. Required: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `ADMIN_SESSION_SECRET`, and `ADMIN_BOOTSTRAP_KEY`. `JWT_SECRET` and the legacy `ADMIN_TOKEN_SECRET` are accepted as signing-secret aliases, but `ADMIN_SESSION_SECRET` is preferred. `ALLOWED_ORIGINS` is a comma-separated exact allowlist; its default permits only `https://kaushalyaguesthouse.github.io` and the documented localhost development origins. Optional configuration covers room prices/inventory, booking limits, payment method names, email webhook delivery, and guest-house contact details; see `.env.example` for every variable.
 
 Room inventory and nightly prices are deliberately centralized in `ROOM_TYPES`, `ROOM_PRICE_<NORMALIZED_ROOM_NAME>`, and `ROOM_INVENTORY_<NORMALIZED_ROOM_NAME>`. The checked-in defaults (Standard ₹1,800/one room and Deluxe ₹2,500/one room) are only operational fallbacks: set them to the guest house's actual inventory and rates before deployment. Every seventh night is free (7 nights = 6 charged; 14 = 12).
 
@@ -61,8 +61,9 @@ Exchange the bootstrap key with `POST /admin/login`, either as `X-Admin-Key` or 
 - `GET /admin/bookings?status=Confirmed&limit=100`
 - `GET /admin/bookings/:uuid`
 - `PATCH /admin/bookings/:uuid/status` with `{"status":"Pending|Confirmed|Cancelled|Completed"}`
-- `GET /admin/reviews` (pending, including email for moderation only)
+- `GET /admin/reviews` (all reviews, including pending reviews and email for moderation only)
 - `PATCH /admin/reviews/:uuid` with `{"status":"approved|rejected"}`
+- `DELETE /admin/reviews/:uuid`
 
 Keep the bootstrap key in a password manager and rotate both admin secrets after suspected disclosure. This repository intentionally contains no admin frontend.
 

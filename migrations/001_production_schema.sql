@@ -47,6 +47,7 @@ create table if not exists public.reviews (
 alter table public.reviews add column if not exists status text default 'pending';
 alter table public.reviews add column if not exists id uuid default gen_random_uuid();
 alter table public.reviews add column if not exists created_at timestamptz default now();
+alter table public.reviews add column if not exists moderated_at timestamptz;
 -- Preserve approval state from the legacy schema when that column exists.
 do $$ begin
   if exists (select 1 from information_schema.columns where table_schema='public' and table_name='reviews' and column_name='approved') then
