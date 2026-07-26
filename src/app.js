@@ -18,13 +18,14 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const BOOKING_STATUSES = ["Pending", "Confirmed", "Cancelled", "Completed"];
 const ADMIN_BOOKING_FIELDS = ["id", "booking_id", "customer_name", "phone", "email", "room_type", "check_in", "check_out", "adults", "children", "booking_status", "payment_status", "amount", "advance_amount", "created_at"];
 const OPERATIONAL_STATUSES = ["operational", "maintenance", "out_of_service"];
-const HOUSEKEEPING_STATUSES = ["clean", "dirty", "cleaning"];
+const HOUSEKEEPING_STATUSES = ["clean", "dirty", "cleaning", "inspected"];
 const ROOM_FIELDS = ["id", "room_number", "floor", "operational_status", "housekeeping_status", "notes", "is_active", "created_at", "updated_at"];
 
 function deriveRoomStatus(room) {
   if (!room.is_active || room.operational_status === "out_of_service") return "Out of Service";
   if (room.operational_status === "maintenance") return "Maintenance";
-  if (room.housekeeping_status !== "clean") return "Cleaning";
+  if (room.stay_status === "checked_in") return "Occupied";
+  if (!["clean", "inspected"].includes(room.housekeeping_status)) return "Cleaning";
   return "Available";
 }
 
@@ -272,6 +273,32 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       const result = await db.roomAssignments(req.params.id);
       if (!result) return fail(res, 404, "Booking not found.");
       return res.json({ success: true, current: result.current, history: result.history });
+    } catch (e) { next(e); }
+  });
+  app.post("/admin/bookings/:id/check-in", admin, validateUuid, async (req, res, next) => {
+    try {
+      const result = await db.checkIn(req.params.id);
+      if (!result?.success) {
+        const failures = {
+          booking_not_found: [404, "Booking not found."], booking_not_confirmed: [409, "Only a Confirmed booking may be checked in."],
+          no_room_assigned: [409, "The booking has no active room assignment."], multiple_rooms_assigned: [409, "The booking must have exactly one active room assignment."],
+          already_checked_in: [409, "The guest is already checked in."], room_inactive: [409, "The assigned room is inactive."],
+          room_not_operational: [409, "The assigned room is not operational."], room_not_ready: [409, "The assigned room must be clean or inspected."]
+        };
+        const [status, message] = failures[result?.reason] || [409, "The guest could not be checked in."];
+        return fail(res, status, message);
+      }
+      return res.json({
+        success: true,
+        booking: { booking_id: result.booking_id, booking_status: result.booking_status, stay_status: result.stay_status, checked_in_at: result.checked_in_at },
+        room: { room_number: result.room_number, derived_status: "occupied" }
+      });
+    } catch (e) { next(e); }
+  });
+  app.get("/admin/bookings/:id/stay", admin, validateUuid, async (req, res, next) => {
+    try {
+      const stay = await db.bookingStay(req.params.id);
+      return stay ? res.json({ success: true, stay }) : fail(res, 404, "Booking not found.");
     } catch (e) { next(e); }
   });
   app.get("/admin/bookings/:id", admin, validateUuid, async (req, res, next) => { try { const booking = await db.booking(req.params.id); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });

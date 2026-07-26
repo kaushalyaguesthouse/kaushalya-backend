@@ -197,3 +197,47 @@ begin
 end $$;
 revoke all on function public.assign_booking_room(uuid,uuid,text), public.release_booking_room(uuid,text,text) from public, anon, authenticated;
 grant execute on function public.assign_booking_room(uuid,uuid,text), public.release_booking_room(uuid,text,text) to service_role;
+
+-- Phase 4.4: guest stays and atomic check-in.
+alter table public.rooms drop constraint if exists rooms_housekeeping_status_check;
+alter table public.rooms add constraint rooms_housekeeping_status_check check (housekeeping_status in ('clean','dirty','cleaning','inspected'));
+
+create table if not exists public.booking_stays (
+  booking_id uuid primary key references public.bookings(id) on update cascade on delete restrict,
+  stay_status text not null default 'not_checked_in' check (stay_status in ('not_checked_in','checked_in','checked_out','no_show')),
+  checked_in_at timestamptz, checked_out_at timestamptz, no_show_at timestamptz,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+insert into public.booking_stays(booking_id) select id from public.bookings on conflict (booking_id) do nothing;
+create or replace function public.create_booking_stay() returns trigger language plpgsql security definer set search_path = public as $$
+begin insert into booking_stays(booking_id) values(new.id) on conflict (booking_id) do nothing; return new; end $$;
+drop trigger if exists bookings_create_stay on public.bookings;
+create trigger bookings_create_stay after insert on public.bookings for each row execute function public.create_booking_stay();
+drop trigger if exists booking_stays_set_updated_at on public.booking_stays;
+create trigger booking_stays_set_updated_at before update on public.booking_stays for each row execute function public.set_updated_at();
+
+create or replace function public.check_in_booking(target_booking_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare b public.bookings; s public.booking_stays; a public.booking_room_assignments; r public.rooms; active_count integer; checked_in timestamptz;
+begin
+  perform pg_advisory_xact_lock(hashtext(target_booking_id::text));
+  select * into b from bookings where id=target_booking_id for update;
+  if not found then return jsonb_build_object('success',false,'reason','booking_not_found'); end if;
+  if b.booking_status <> 'Confirmed' then return jsonb_build_object('success',false,'reason','booking_not_confirmed'); end if;
+  insert into booking_stays(booking_id) values(target_booking_id) on conflict (booking_id) do nothing;
+  select * into s from booking_stays where booking_id=target_booking_id for update;
+  if s.stay_status = 'checked_in' then return jsonb_build_object('success',false,'reason','already_checked_in'); end if;
+  select count(*) into active_count from booking_room_assignments where booking_id=target_booking_id and assignment_status='active';
+  if active_count = 0 then return jsonb_build_object('success',false,'reason','no_room_assigned'); end if;
+  if active_count <> 1 then return jsonb_build_object('success',false,'reason','multiple_rooms_assigned'); end if;
+  select * into a from booking_room_assignments where booking_id=target_booking_id and assignment_status='active' for share;
+  select * into r from rooms where id=a.room_id for update;
+  if not r.is_active then return jsonb_build_object('success',false,'reason','room_inactive'); end if;
+  if r.operational_status <> 'operational' then return jsonb_build_object('success',false,'reason','room_not_operational'); end if;
+  if r.housekeeping_status not in ('clean','inspected') then return jsonb_build_object('success',false,'reason','room_not_ready'); end if;
+  checked_in := now();
+  update booking_stays set stay_status='checked_in',checked_in_at=checked_in,checked_out_at=null,no_show_at=null where booking_id=target_booking_id;
+  return jsonb_build_object('success',true,'booking_id',b.booking_id,'booking_status',b.booking_status,'stay_status','checked_in','checked_in_at',checked_in,'room_number',r.room_number);
+end $$;
+revoke all on function public.check_in_booking(uuid) from public, anon, authenticated;
+grant execute on function public.check_in_booking(uuid) to service_role;

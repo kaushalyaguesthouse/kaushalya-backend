@@ -66,3 +66,18 @@ test("room assignments use immutable booking-derived ranges and reject active ov
   assert.match(migration, /update booking_room_assignments set assignment_status='released',released_at=now\(\),released_by=actor,release_reason=reason/);
   assert.doesNotMatch(migration, /update booking_room_assignments set[^;]*allocation_range/);
 });
+
+test("guest stay migration creates one constrained stay per booking and an atomic privacy-safe check-in RPC", () => {
+  assert.match(migration, /create table if not exists public\.booking_stays/);
+  assert.match(migration, /booking_id uuid primary key references public\.bookings\(id\)/);
+  assert.match(migration, /default 'not_checked_in' check \(stay_status in \('not_checked_in','checked_in','checked_out','no_show'\)\)/);
+  assert.match(migration, /insert into public\.booking_stays\(booking_id\) select id from public\.bookings on conflict \(booking_id\) do nothing/);
+  assert.match(migration, /create trigger bookings_create_stay after insert on public\.bookings/);
+  assert.match(migration, /create or replace function public\.check_in_booking/);
+  assert.match(migration, /b\.booking_status <> 'Confirmed'/);
+  assert.match(migration, /active_count <> 1/);
+  assert.match(migration, /r\.housekeeping_status not in \('clean','inspected'\)/);
+  assert.match(migration, /update booking_stays set stay_status='checked_in',checked_in_at=checked_in/);
+  assert.doesNotMatch(migration.split("-- Phase 4.4:")[1], /update booking_room_assignments/);
+  assert.match(migration, /revoke all on function public\.check_in_booking\(uuid\) from public, anon, authenticated/);
+});
