@@ -6,14 +6,14 @@ Production-oriented Express API backed by PostgreSQL through Supabase. It provid
 
 1. Use Node.js 20 or newer and run `npm ci`.
 2. Copy `.env.example` to `.env` and replace every placeholder. Never expose the service-role key, Razorpay secret, admin secrets, or email token to a browser.
-3. Run `migrations/001_production_schema.sql` once in the Supabase SQL editor. It is additive and uses `IF NOT EXISTS`; back up production before every schema migration. The migration creates generated UUID primary keys, payment-order uniqueness, booking idempotency/payment uniqueness, availability/review indexes, and an advisory-lock-protected booking function.
+3. Run `migrations/001_production_schema.sql` and then `migrations/002_production_integrity_indexes.sql` in the Supabase SQL editor. They are additive and use `IF NOT EXISTS`; back up production before every schema migration. See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for backup, restore, migration, rollback, and disaster-recovery procedures.
 4. Start with `npm start`. Render should use the same start command and `/health` as its health-check path.
 
 The server refuses to start when security-critical configuration is missing. `SUPABASE_ANON_KEY` remains a development compatibility fallback, but production requires `SUPABASE_SERVICE_ROLE_KEY` because public RLS credentials must not be granted administrative access. Generate a unique admin signing secret of at least 32 characters (for example, `openssl rand -base64 48`); never reuse the bootstrap key.
 
 ## Configuration
 
-All variables and safe examples are in `.env.example`. Required: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `ADMIN_SESSION_SECRET`, and `ADMIN_BOOTSTRAP_KEY`. `JWT_SECRET` and the legacy `ADMIN_TOKEN_SECRET` are accepted as signing-secret aliases, but `ADMIN_SESSION_SECRET` is preferred. `ALLOWED_ORIGINS` is a comma-separated exact allowlist; its default permits only `https://kaushalyaguesthouse.github.io` and the documented localhost development origins. Optional configuration covers room prices/inventory, booking limits, payment method names, email webhook delivery, and guest-house contact details; see `.env.example` for every variable.
+All variables and safe examples are in `.env.example`. Required: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `ADMIN_SESSION_SECRET`, and `ADMIN_BOOTSTRAP_KEY`. `JWT_SECRET` and the legacy `ADMIN_TOKEN_SECRET` are accepted as signing-secret aliases, but `ADMIN_SESSION_SECRET` is preferred. `ALLOWED_ORIGINS` is a comma-separated exact allowlist; production entries must use HTTPS. The development fallback additionally permits the documented localhost origins. Optional configuration covers request/rate limits, room prices/inventory, booking limits, payment method names, email webhook delivery, and guest-house contact details; see `.env.example` for every variable.
 
 Room inventory and nightly prices are deliberately centralized in `ROOM_TYPES`, `ROOM_PRICE_<NORMALIZED_ROOM_NAME>`, and `ROOM_INVENTORY_<NORMALIZED_ROOM_NAME>`. The checked-in defaults (Standard ₹1,800/one room and Deluxe ₹2,500/one room) are only operational fallbacks: set them to the guest house's actual inventory and rates before deployment. Every seventh night is free (7 nights = 6 charged; 14 = 12).
 
@@ -26,7 +26,9 @@ All errors are JSON: `{"success":false,"message":"...","errors":{"field":"..."}}
 ### Public and booking routes
 
 - `GET /` — legacy text response.
-- `GET /health` — database-aware health response.
+- `GET /health` — aggregate database-aware health response with status, uptime, version, database state, memory usage, and timestamp.
+- `GET /health/database` — database readiness response (HTTP 503 when unavailable).
+- `GET /health/application` — process liveness response without a database dependency.
 - `GET /rooms` — configured public rate and inventory metadata.
 - `POST /quote` — validates a complete booking request and returns authoritative nights, free nights, and total.
 - `POST /availability` — accepts `room_type`, `check_in`, and `check_out`; returns `available` and `remaining` using half-open overlap (`existing.check_in < requested.check_out AND existing.check_out > requested.check_in`).
@@ -64,6 +66,14 @@ Exchange the bootstrap key with `POST /admin/login`, using the frontend-compatib
 - `GET /admin/reviews` (all reviews, including pending reviews and email for moderation only)
 - `PATCH /admin/reviews/:uuid` with `{"status":"approved|rejected"}`
 - `DELETE /admin/reviews/:uuid`
+
+Additional authenticated operational endpoints (all return JSON unless a download is requested):
+
+- `GET /admin/rooms`, `GET /admin/rooms/status`
+- `GET /admin/availability`, `GET /admin/analytics/summary`
+- `POST|DELETE /admin/bookings/:uuid/assign-room`, `GET /admin/bookings/:uuid/assignment`
+- `POST /admin/bookings/:uuid/check-in`, `POST /admin/bookings/:uuid/check-out`, `GET /admin/bookings/:uuid/stay`, `GET /admin/bookings/:uuid/housekeeping`
+- `GET /admin/housekeeping`, `POST /admin/housekeeping/:taskId/start|complete|inspect`
 
 Keep the bootstrap key in a password manager and rotate both admin secrets after suspected disclosure. This repository intentionally contains no admin frontend.
 

@@ -40,7 +40,7 @@ async function withServer(run) {
 }
 
 test("health, public reviews, validation, and 404 routes smoke test", () => withServer(async (url) => {
-  let response = await fetch(`${url}/health`); assert.equal(response.status, 200); assert.deepEqual(await response.json(), { success: true, status: "ok" });
+  let response = await fetch(`${url}/health`); assert.equal(response.status, 200); const health = await response.json(); assert.equal(health.success, true); assert.equal(health.status, "ok"); assert.equal(health.database, "connected"); assert.equal(health.version, "1.0.0");
   response = await fetch(`${url}/reviews`); const reviews = await response.json(); assert.equal(reviews.reviews[0].customer_email, undefined);
   response = await fetch(`${url}/quote`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); assert.equal(response.status, 422);
   response = await fetch(`${url}/missing`); assert.equal(response.status, 404);
@@ -74,7 +74,7 @@ test("admin login logs secret-safe diagnostics", async () => {
     const url = `http://127.0.0.1:${server.address().port}`;
     const response = await fetch(`${url}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bootstrapKey: "bootstrap-secret" }) });
     assert.equal(response.status, 200);
-    assert.deepEqual(entries, [{ event: "ADMIN_LOGIN_CHECK", details: { bootstrapKeyConfigured: true, requestHasBootstrapKey: true, comparisonSucceeded: true } }]);
+    assert.deepEqual(entries.find(({ event }) => event === "ADMIN_LOGIN_CHECK"), { event: "ADMIN_LOGIN_CHECK", details: { bootstrapKeyConfigured: true, requestHasBootstrapKey: true, comparisonSucceeded: true } });
     assert.equal(JSON.stringify(entries).includes("bootstrap-secret"), false);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });

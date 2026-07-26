@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
+const packageInfo = require("../package.json");
+const { helmet, requestContext, validateRequest } = require("./security");
 const { createAnalyticsSummary, createAvailabilityReport, validateAvailabilityQuery, validateBooking, validateReview, verifySignature, signAdminToken, verifyAdminToken } = require("./core");
 const { SETTING_FIELDS, csv, dateRange, invoiceFrom, occupancySummary, pdf, revenueSummary } = require("./business");
 
@@ -8,8 +10,9 @@ function createRateLimiter(limit = 120, windowMs = 60000) {
   const clients = new Map();
   return (req, res, next) => {
     const now = Date.now(); const key = req.ip; const entry = clients.get(key);
+    if (clients.size > 10000) for (const [client, value] of clients) if (value.reset < now) clients.delete(client);
     if (!entry || entry.reset < now) clients.set(key, { count: 1, reset: now + windowMs });
-    else if (++entry.count > limit) return res.status(429).json({ success: false, message: "Too many requests. Please try again later." });
+    else if (++entry.count > limit) { res.set("Retry-After", String(Math.max(1, Math.ceil((entry.reset - now) / 1000)))); return res.status(429).json({ success: false, message: "Too many requests. Please try again later.", code: "RATE_LIMITED" }); }
     return next();
   };
 }
@@ -95,6 +98,7 @@ function validateAdminBookingsQuery(query, rooms) {
     limit: integer("limit", 25, 100)
   };
   if (filters.status && !BOOKING_STATUSES.includes(filters.status)) errors.status = "Invalid booking status.";
+  if (filters.search.length > 100 || (filters.search && !/^[\p{L}\p{N}@.+ _-]+$/u.test(filters.search))) errors.search = "Search contains unsupported characters.";
   if (filters.room_type && !rooms[filters.room_type]) errors.room_type = "Unknown room type.";
   for (const name of ["check_in_from", "check_in_to"]) if (filters[name] && !isDate(filters[name])) errors[name] = `${name} must be a valid date in YYYY-MM-DD format.`;
   if (!errors.check_in_from && !errors.check_in_to && filters.check_in_from && filters.check_in_to && filters.check_in_from > filters.check_in_to) errors.check_in_to = "check_in_to must be on or after check_in_from.";
@@ -110,10 +114,18 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
-  app.use((req, res, next) => { res.set({ "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'" }); next(); });
-  app.use(cors({ origin(origin, callback) { callback(null, !origin || config.origins.includes(origin)); }, methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "X-Admin-Key"] }));
-  app.use(express.json({ limit: "100kb" }));
-  app.use(createRateLimiter());
+  app.use(helmet());
+  app.use(requestContext(logger));
+  app.use(cors({ origin(origin, callback) { if (!origin || config.origins.includes(origin)) return callback(null, true); const error = new Error("Origin not allowed."); error.status = 403; error.code = "CORS_DENIED"; return callback(error); }, methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "X-Admin-Key", "X-Request-Id"], exposedHeaders: ["X-Request-Id"], credentials: false, maxAge: 600 }));
+  app.use(express.json({ limit: config.bodyLimit || "100kb", strict: true }));
+  app.use(express.urlencoded({ extended: false, limit: config.bodyLimit || "100kb", parameterLimit: 100 }));
+  app.use(validateRequest);
+  app.use(createRateLimiter(config.rateLimit || 120, config.rateWindowMs || 60000));
+  app.use((req, res, next) => {
+    const category = req.path.startsWith("/admin/login") ? "AUTHENTICATION" : req.path.includes("housekeeping") ? "HOUSEKEEPING" : req.path.includes("maintenance") ? "MAINTENANCE" : req.path.includes("invoice") ? "INVOICE" : req.path.includes("review") ? "REVIEW" : req.path.includes("payment") || req.path.includes("order") ? "PAYMENT" : req.path.includes("booking") || req.path.includes("availability") ? "BOOKING" : null;
+    if (category && req.method !== "GET") res.on("finish", () => logger.info?.(`${category}_ACTIVITY`, { request_id: req.id, method: req.method, path: req.path, status: res.statusCode }));
+    next();
+  });
 
   const fail = (res, status, message, errors) => res.status(status).json({ success: false, message, ...(errors && { errors }) });
   const admin = (req, res, next) => {
@@ -123,14 +135,14 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   const validate = (body) => validateBooking(body, config);
   const audit = (req, action, entity, entityId = null, details = {}) => {
     if (typeof db.createAuditLog !== "function") return;
-    db.createAuditLog({ user_name: "admin", action, entity, entity_id: entityId, ip: req.ip, details }).catch((error) => logger.error("AUDIT_LOG_FAILED", { action, message: error.message }));
+    db.createAuditLog({ user_name: "admin", action, entity, entity_id: entityId, ip: req.ip, details }).catch(() => logger.error("AUDIT_LOG_FAILED", { action }));
   };
 
   app.get("/", (_req, res) => res.status(200).send("Kaushalya Guest House Backend Running"));
-  app.get("/health", async (_req, res) => {
-    const healthy = await db.health();
-    res.status(healthy ? 200 : 503).json({ success: healthy, status: healthy ? "ok" : "degraded" });
-  });
+  const healthPayload = (database, status = database === true ? "ok" : database === false ? "degraded" : "ok") => ({ success: status === "ok", status, uptime: process.uptime(), version: packageInfo.version, database: database === true ? "connected" : database === false ? "unavailable" : "not_checked", memory: process.memoryUsage(), timestamp: new Date().toISOString() });
+  app.get("/health", async (_req, res, next) => { try { const healthy = await db.health(); return res.status(healthy ? 200 : 503).json(healthPayload(healthy)); } catch (error) { return next(error); } });
+  app.get("/health/database", async (_req, res, next) => { try { const healthy = await db.health(); return res.status(healthy ? 200 : 503).json(healthPayload(healthy)); } catch (error) { return next(error); } });
+  app.get("/health/application", (_req, res) => res.json(healthPayload(null)));
   app.get("/rooms", (_req, res) => res.json({ success: true, rooms: config.rooms }));
   app.post("/quote", (req, res) => {
     const result = validate(req.body);
@@ -203,7 +215,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   config.rooms[result.value.room_type].inventory
 );
       if (!booking) return fail(res, 409, "The selected room is no longer available.");
-      if (!booking.email_sent_at && mailer) mailer.sendBooking(booking, config.contact).then(() => db.markEmailSent(booking.id)).catch((error) => logger.error("BOOKING_EMAIL_FAILED", { booking_id: booking.booking_id, message: error.message }));
+      if (!booking.email_sent_at && mailer) mailer.sendBooking(booking, config.contact).then(() => db.markEmailSent(booking.id)).catch(() => logger.error("BOOKING_EMAIL_FAILED", { booking_id: booking.booking_id }));
       return res.status(201).json({ success: true, booking_id: booking.booking_id, booking: [booking] });
     } catch (error) { next(error); }
   });
@@ -443,7 +455,13 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     } catch (e) { next(e); }
   });
   app.use((_req, res) => fail(res, 404, "Route not found."));
-  app.use((error, _req, res, _next) => { logger.error("REQUEST_FAILED", { message: error.message }); return fail(res, 500, "An internal server error occurred."); });
+  app.use((error, req, res, _next) => {
+    const clientError = error.type === "entity.parse.failed" || error.type === "entity.too.large" || error.status === 403;
+    const status = error.type === "entity.too.large" ? 413 : error.status === 403 ? 403 : clientError ? 400 : 500;
+    const code = error.code === "CORS_DENIED" ? "CORS_DENIED" : error.type === "entity.too.large" ? "PAYLOAD_TOO_LARGE" : error.type === "entity.parse.failed" ? "INVALID_JSON" : "INTERNAL_ERROR";
+    logger.error("REQUEST_FAILED", { request_id: req.id, method: req.method, path: req.path, status, error_name: error.name, code });
+    return res.status(status).json({ success: false, message: status === 500 ? "An internal server error occurred." : status === 413 ? "Request body is too large." : status === 403 ? "Origin is not allowed." : "Request body is not valid JSON.", code });
+  });
   return app;
 }
 module.exports = { createApp };
