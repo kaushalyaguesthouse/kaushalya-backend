@@ -74,3 +74,15 @@ The previous server trusted arbitrary client amounts/statuses, allowed invalid g
 Atomic availability depends on applying the migration. Inventory remains category-level because no physical room mapping existed in this repository. Confirm actual prices, room counts, payment-method spelling, and guest capacity with the business before production. Existing legacy rows are preserved; because PostgreSQL cannot safely add `NOT NULL` to unknown dirty production data, strict constraints are applied to new tables and API writes while a later data-cleaning migration should validate legacy booking columns. The provider-neutral email webhook must be implemented/configured externally; no credentials are committed.
 
 Run `npm test` and `npm run check` before deployment. Tests use no database or production credentials.
+
+## Business and reporting APIs
+
+All routes below require the existing admin bearer token. Reporting accepts `period=today|yesterday|last_7_days|last_30_days|monthly|yearly` or an inclusive `start_date`/`end_date` pair.
+
+- `GET /admin/invoices`, `GET /admin/invoices/:bookingId`, `GET /admin/invoices/:bookingId/pdf`
+- `GET|PUT|PATCH /admin/settings` for business, GST, contact, invoice, currency, timezone, and logo metadata
+- `GET /admin/reports/revenue` and `GET /admin/reports/occupancy`
+- `GET /admin/exports/:dataset?format=csv|excel|pdf` where dataset is `bookings`, `revenue`, `occupancy`, `housekeeping`, `maintenance`, or `reviews`
+- `GET /admin/audit-logs` with pagination, action/entity filtering, and optional dates
+
+Apply `migrations/001_production_schema.sql` with the service role before enabling these routes. Invoice creation is idempotent per completed booking and numbers use `KGH-YYYY-000001` (or the configured prefix).

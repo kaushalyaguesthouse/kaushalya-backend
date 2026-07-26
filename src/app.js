@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const { createAnalyticsSummary, createAvailabilityReport, validateAvailabilityQuery, validateBooking, validateReview, verifySignature, signAdminToken, verifyAdminToken } = require("./core");
+const { SETTING_FIELDS, csv, dateRange, invoiceFrom, occupancySummary, pdf, revenueSummary } = require("./business");
 
 function createRateLimiter(limit = 120, windowMs = 60000) {
   const clients = new Map();
@@ -120,6 +121,10 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     return verifyAdminToken(token, config.adminSecret) ? next() : fail(res, 401, "Admin authentication required.");
   };
   const validate = (body) => validateBooking(body, config);
+  const audit = (req, action, entity, entityId = null, details = {}) => {
+    if (typeof db.createAuditLog !== "function") return;
+    db.createAuditLog({ user_name: "admin", action, entity, entity_id: entityId, ip: req.ip, details }).catch((error) => logger.error("AUDIT_LOG_FAILED", { action, message: error.message }));
+  };
 
   app.get("/", (_req, res) => res.status(200).send("Kaushalya Guest House Backend Running"));
   app.get("/health", async (_req, res) => {
@@ -218,6 +223,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       comparisonSucceeded
     });
     if (!comparisonSucceeded) return fail(res, 401, "Invalid admin credentials.");
+    audit(req, "login", "session");
     res.json({ success: true, accessToken: signAdminToken(config.adminSecret) });
   });
   app.get("/admin/bookings", admin, async (req, res, next) => {
@@ -276,6 +282,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       const response = { success: true, task: publicHousekeepingTask(result.task) };
       if (result.room) response.room = publicRoom(result.room);
       if (action === "inspect") response.derived_status = result.derived_status;
+      audit(req, `housekeeping.${action}`, "housekeeping_task", req.params.taskId);
       return res.json(response);
     } catch (e) { next(e); }
   };
@@ -311,6 +318,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
         const [status, message] = failures[result?.reason] || [409, "The room could not be assigned."];
         return fail(res, status, message);
       }
+      audit(req, "room.assign", "booking", req.params.id, { room_id: req.body.room_id });
       return res.status(201).json({ success: true, booking_id: req.params.id, room: result.room, assigned_at: result.assigned_at, assignment_status: "active" });
     } catch (e) { next(e); }
   });
@@ -341,6 +349,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
         const [status, message] = failures[result?.reason] || [409, "The guest could not be checked in."];
         return fail(res, status, message);
       }
+      audit(req, "booking.check_in", "booking", req.params.id);
       return res.json({
         success: true,
         booking: { booking_id: result.booking_id, booking_status: result.booking_status, stay_status: result.stay_status, checked_in_at: result.checked_in_at },
@@ -360,6 +369,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
         const [status, message] = failures[result?.reason] || [409, "The guest could not be checked out."];
         return fail(res, status, message);
       }
+      audit(req, "booking.check_out", "booking", req.params.id);
       return res.json({
         success: true,
         booking: { booking_status: result.booking_status, stay_status: result.stay_status, checked_out_at: result.checked_out_at },
@@ -381,11 +391,57 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       return stay ? res.json({ success: true, stay }) : fail(res, 404, "Booking not found.");
     } catch (e) { next(e); }
   });
-  app.get("/admin/bookings/:id", admin, validateUuid, async (req, res, next) => { try { const booking = await db.booking(req.params.id); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
-  app.patch("/admin/bookings/:id/status", admin, validateUuid, async (req, res, next) => { try { if (!BOOKING_STATUSES.includes(req.body?.status)) return fail(res, 422, "Invalid booking status.", { status: "Status must be Pending, Confirmed, Cancelled, or Completed." }); const booking = await db.updateBooking(req.params.id, req.body.status); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
+  app.get("/admin/bookings/:id", admin, validateUuid, async (req, res, next) => { try { const booking = await db.booking(req.params.id); const safe = booking && Object.fromEntries(Object.entries(booking).filter(([key]) => !["razorpay_order_id", "razorpay_payment_id", "razorpay_signature", "idempotency_key", "payment_secret", "jwt"].includes(key))); return safe ? res.json({ success: true, booking: safe }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
+  app.patch("/admin/bookings/:id/status", admin, validateUuid, async (req, res, next) => { try { if (!BOOKING_STATUSES.includes(req.body?.status)) return fail(res, 422, "Invalid booking status.", { status: "Status must be Pending, Confirmed, Cancelled, or Completed." }); const booking = await db.updateBooking(req.params.id, req.body.status); if (booking) audit(req, "booking.edit", "booking", req.params.id, { field: "status" }); return booking ? res.json({ success: true, booking }) : fail(res, 404, "Booking not found."); } catch (e) { next(e); } });
   app.get("/admin/reviews", admin, async (_req, res, next) => { try { res.json({ success: true, reviews: await db.reviews() }); } catch (e) { next(e); } });
   app.patch("/admin/reviews/:id", admin, validateUuid, async (req, res, next) => { try { if (!["approved", "rejected"].includes(req.body?.status)) return fail(res, 422, "Status must be approved or rejected.", { status: "Status must be approved or rejected." }); const review = await db.moderateReview(req.params.id, req.body.status); return review ? res.json({ success: true, review }) : fail(res, 404, "Review not found."); } catch (e) { next(e); } });
   app.delete("/admin/reviews/:id", admin, validateUuid, async (req, res, next) => { try { const review = await db.deleteReview(req.params.id); return review ? res.json({ success: true, message: "Review deleted successfully.", review }) : fail(res, 404, "Review not found."); } catch (e) { next(e); } });
+
+  app.get("/admin/settings", admin, async (_req, res, next) => { try { return res.json({ success: true, settings: await db.getSettings() }); } catch (e) { next(e); } });
+  app.put("/admin/settings", admin, async (req, res, next) => {
+    try {
+      const values = Object.fromEntries(SETTING_FIELDS.filter((key) => Object.hasOwn(req.body || {}, key)).map((key) => [key, req.body[key]]));
+      if (!Object.keys(values).length) return fail(res, 422, "No supported settings were supplied.");
+      if (values.gst_percent != null && (!Number.isFinite(Number(values.gst_percent)) || Number(values.gst_percent) < 0 || Number(values.gst_percent) > 100)) return fail(res, 422, "GST percent must be between 0 and 100.", { gst_percent: "Invalid GST percent." });
+      const settings = await db.updateSettings(values); audit(req, "settings.update", "settings", null, { fields: Object.keys(values) });
+      return res.json({ success: true, settings });
+    } catch (e) { next(e); }
+  });
+  app.patch("/admin/settings", admin, async (req, res, next) => {
+    try {
+      const values = Object.fromEntries(SETTING_FIELDS.filter((key) => Object.hasOwn(req.body || {}, key)).map((key) => [key, req.body[key]]));
+      if (!Object.keys(values).length) return fail(res, 422, "No supported settings were supplied.");
+      if (values.gst_percent != null && (!Number.isFinite(Number(values.gst_percent)) || Number(values.gst_percent) < 0 || Number(values.gst_percent) > 100)) return fail(res, 422, "GST percent must be between 0 and 100.", { gst_percent: "Invalid GST percent." });
+      const settings = await db.updateSettings(values); audit(req, "settings.update", "settings", null, { fields: Object.keys(values) }); return res.json({ success: true, settings });
+    } catch (e) { next(e); }
+  });
+
+  app.get("/admin/invoices", admin, async (req, res, next) => {
+    try { const page = Math.max(1, Number(req.query.page) || 1); const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25)); const result = await db.listInvoices({ page, limit, start_date: req.query.start_date, end_date: req.query.end_date }); return res.json({ success: true, items: result.items, pagination: { page, limit, total: result.total, total_pages: Math.ceil(result.total / limit) } }); } catch (e) { next(e); }
+  });
+  const loadInvoice = async (bookingId, req) => {
+    const row = await db.invoiceBooking(bookingId); if (!row || row.booking_status !== "Completed") return null;
+    const settings = await db.getSettings(); const saved = row.invoice_number ? row : { ...row, ...(await db.createInvoice(row.id, settings.invoice_prefix || "KGH")) };
+    if (!row.invoice_number) audit(req, "invoice.generate", "booking", row.id, { invoice_number: saved.invoice_number });
+    return invoiceFrom(saved, saved.business_details || settings);
+  };
+  app.get("/admin/invoices/:bookingId", admin, async (req, res, next) => { try { const invoice = await loadInvoice(req.params.bookingId, req); return invoice ? res.json({ success: true, invoice }) : fail(res, 404, "Completed booking not found."); } catch (e) { next(e); } });
+  app.get("/admin/invoices/:bookingId/pdf", admin, async (req, res, next) => { try { const invoice = await loadInvoice(req.params.bookingId, req); if (!invoice) return fail(res, 404, "Completed booking not found."); const document = pdf(`Invoice ${invoice.invoice_number}`, Object.entries(invoice).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)); res.set({ "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="${invoice.invoice_number}.pdf"`, "Content-Length": document.length }); return res.send(document); } catch (e) { next(e); } });
+
+  app.get("/admin/reports/revenue", admin, async (req, res, next) => { try { const range = dateRange(req.query); if (!range) return fail(res, 422, "Invalid reporting range."); return res.json({ success: true, range, ...revenueSummary(await db.reportingBookings(range)) }); } catch (e) { next(e); } });
+  app.get("/admin/reports/occupancy", admin, async (req, res, next) => { try { const range = dateRange(req.query); if (!range) return fail(res, 422, "Invalid reporting range."); const data = await db.occupancyData(range); return res.json({ success: true, range, ...occupancySummary(data.bookings, data.room_count, range) }); } catch (e) { next(e); } });
+  app.get("/admin/audit-logs", admin, async (req, res, next) => { try { const page = Math.max(1, Number(req.query.page) || 1); const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25)); const result = await db.auditLogs({ page, limit, action: req.query.action, entity: req.query.entity, start_date: req.query.start_date, end_date: req.query.end_date }); return res.json({ success: true, items: result.items, pagination: { page, limit, total: result.total, total_pages: Math.ceil(result.total / limit) } }); } catch (e) { next(e); } });
+  app.get("/admin/exports/:dataset", admin, async (req, res, next) => {
+    try {
+      const datasets = ["bookings", "revenue", "occupancy", "housekeeping", "maintenance", "reviews"]; const format = String(req.query.format || "csv").toLowerCase();
+      if (!datasets.includes(req.params.dataset) || !["csv", "excel", "pdf"].includes(format)) return fail(res, 422, "Unsupported export dataset or format.");
+      const range = dateRange(req.query); if (!range) return fail(res, 422, "Invalid reporting range."); const rows = await db.exportRows(req.params.dataset, range);
+      let body; let type; let extension = format;
+      if (format === "pdf") { body = pdf(`${req.params.dataset} report`, rows.map((row) => Object.values(row).join(" | "))); type = "application/pdf"; }
+      else { body = Buffer.from(`\uFEFF${csv(rows)}`); type = format === "excel" ? "application/vnd.ms-excel" : "text/csv; charset=utf-8"; extension = format === "excel" ? "xls" : "csv"; }
+      res.set({ "Content-Type": type, "Content-Disposition": `attachment; filename="${req.params.dataset}-${range.start_date}-${range.end_date}.${extension}"` }); return res.send(body);
+    } catch (e) { next(e); }
+  });
   app.use((_req, res) => fail(res, 404, "Route not found."));
   app.use((error, _req, res, _next) => { logger.error("REQUEST_FAILED", { message: error.message }); return fail(res, 500, "An internal server error occurred."); });
   return app;
