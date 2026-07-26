@@ -12,3 +12,14 @@ test("admin bootstrap key is read from ADMIN_BOOTSTRAP_KEY and trimmed", () => {
   assert.equal(loadConfig({ ADMIN_BOOTSTRAP_KEY: "  bootstrap-secret  " }).adminBootstrapKey, "bootstrap-secret");
   assert.equal(loadConfig({}).adminBootstrapKey, "");
 });
+
+test("Supabase configuration uses the service role environment variables", () => {
+  const config = loadConfig({
+    SUPABASE_URL: "  https://project.supabase.co  ",
+    SUPABASE_SERVICE_ROLE_KEY: "  service-role-key  ",
+    SUPABASE_ANON_KEY: "anon-key"
+  });
+
+  assert.equal(config.supabaseUrl, "https://project.supabase.co");
+  assert.equal(config.supabaseKey, "service-role-key");
+});

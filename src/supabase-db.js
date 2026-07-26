@@ -7,7 +7,17 @@ function allocationDates(range) {
 
 function createSupabaseDb(supabase) {
   return {
-    async health() { try { return !((await supabase.from("bookings").select("id", { head: true, count: "exact" }).limit(1)).error); } catch { return false; } },
+    async health() {
+      try {
+        // Fetch at most one row instead of issuing a HEAD/count request. Some
+        // Supabase gateways reject HEAD even though ordinary REST queries work,
+        // which made the readiness check report a false database outage.
+        const result = await supabase.from("bookings").select("id").limit(1);
+        return !result.error;
+      } catch {
+        return false;
+      }
+    },
     async availability(room, start, end, inventory) { const data = assert(await supabase.from("bookings").select("id").eq("room_type", room).in("booking_status", ["Pending", "Confirmed"]).lt("check_in", end).gt("check_out", start)); return Math.max(0, inventory - data.length); },
     async findOrderByKey(key) { return assert(await supabase.from("payment_orders").select("*").eq("idempotency_key", key).maybeSingle()); },
     async saveOrder(order) { return assert(await supabase.from("payment_orders").insert(order).select().single()); },
