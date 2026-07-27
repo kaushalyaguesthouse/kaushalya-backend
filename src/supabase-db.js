@@ -1,4 +1,16 @@
-function assert(result) { if (result.error) throw new Error(result.error.message); return result.data; }
+class DatabaseError extends Error {
+  constructor(error, operation) {
+    super(error?.message || "Database operation failed.");
+    this.name = "DatabaseError";
+    this.code = error?.code;
+    this.details = error?.details;
+    this.hint = error?.hint;
+    this.status = error?.status;
+    this.operation = operation;
+  }
+}
+
+function assert(result, operation) { if (result.error) throw new DatabaseError(result.error, operation); return result.data; }
 
 function allocationDates(range) {
   const match = /^\[([^,]+),([^\)]+)\)$/.exec(String(range || ""));
@@ -113,8 +125,8 @@ function createSupabaseDb(supabase, logger = console, connection = {}) {
     async findOrderByKey(key) { return assert(await supabase.from("payment_orders").select("*").eq("idempotency_key", key).maybeSingle()); },
     async saveOrder(order) { return assert(await supabase.from("payment_orders").insert(order).select().single()); },
     async verifyOrder(fields) { const existing = assert(await supabase.from("payment_orders").select("*").eq("razorpay_order_id", fields.razorpay_order_id).maybeSingle()); if (!existing) return null; return assert(await supabase.from("payment_orders").update({ ...fields, status: "verified", verified_at: new Date().toISOString() }).eq("id", existing.id).select().single()); },
-    async getVerifiedOrder(orderId, paymentId) { if (!orderId || !paymentId) return null; return assert(await supabase.from("payment_orders").select("*").eq("razorpay_order_id", orderId).eq("razorpay_payment_id", paymentId).eq("status", "verified").maybeSingle()); },
-    async createBookingAtomic(booking, inventory) { const data = assert(await supabase.rpc("create_booking_atomic", { booking_data: booking, room_inventory: inventory })); return Array.isArray(data) ? data[0] : data; },
+    async getVerifiedOrder(orderId, paymentId) { if (!orderId || !paymentId) return null; return assert(await supabase.from("payment_orders").select("*").eq("razorpay_order_id", orderId).eq("razorpay_payment_id", paymentId).eq("status", "verified").maybeSingle(), "verified_order_lookup"); },
+    async createBookingAtomic(booking, inventory) { const data = assert(await supabase.rpc("create_booking_atomic", { booking_data: booking, room_inventory: inventory }), "create_booking_atomic"); return Array.isArray(data) ? data[0] : data; },
     async markEmailSent(id) { return assert(await supabase.from("bookings").update({ email_sent_at: new Date().toISOString() }).eq("id", id).is("email_sent_at", null)); },
     async createReview(review) { return assert(await supabase.from("reviews").insert({ ...review, status: "pending" })); },
     async approvedReviews() { return assert(await supabase.from("reviews").select("id,customer_name,rating,review,created_at").eq("status", "approved").order("created_at", { ascending: false }).limit(100)); },
@@ -222,4 +234,4 @@ function createSupabaseDb(supabase, logger = console, connection = {}) {
     }
   };
 }
-module.exports = { REQUIRED_SCHEMA, classifyHealthFailure, createSupabaseDb, healthDiagnostic, postgrestConnectivityProbe, publicHealthDiagnostic, safeDiagnostic };
+module.exports = { DatabaseError, REQUIRED_SCHEMA, classifyHealthFailure, createSupabaseDb, healthDiagnostic, postgrestConnectivityProbe, publicHealthDiagnostic, safeDiagnostic };

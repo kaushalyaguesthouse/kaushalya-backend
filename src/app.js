@@ -127,7 +127,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     next();
   });
 
-  const fail = (res, status, message, errors) => res.status(status).json({ success: false, message, ...(errors && { errors }) });
+  const fail = (res, status, message, errors, code) => res.status(status).json({ success: false, message, ...(errors && { errors }), ...(code && { code }) });
   const admin = (req, res, next) => {
     const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
     return verifyAdminToken(token, config.adminSecret) ? next() : fail(res, 401, "Admin authentication required.");
@@ -196,18 +196,21 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   });
 
   app.post("/create-booking", async (req, res, next) => {
+    let stage = "validation";
     try {
       const result = validate(req.body);
       if (!result.valid) return fail(res, 422, "Invalid booking information.", result.errors);
       if (req.body.amount != null && Number(req.body.amount) !== result.value.total_amount) return fail(res, 409, "Booking amount does not match the authoritative price.", { amount: `Expected ${result.value.total_amount}.` });
       let payment = { status: "pending" };
       if (result.value.payment_type === "Razorpay") {
+        stage = "payment_verification";
         payment = await db.getVerifiedOrder(req.body.razorpay_order_id, req.body.razorpay_payment_id);
         if (!payment) return fail(res, 402, "A server-verified Razorpay payment is required.");
         if (payment.booking_payload.room_type !== result.value.room_type || payment.booking_payload.check_in !== result.value.check_in || payment.booking_payload.check_out !== result.value.check_out) return fail(res, 409, "Payment order does not match booking details.");
       }
       const idempotencyKey = String(req.headers["idempotency-key"] || req.body.idempotency_key || (payment.razorpay_payment_id ? `payment:${payment.razorpay_payment_id}` : "")).slice(0, 100);
       if (!idempotencyKey) return fail(res, 400, "Idempotency-Key header is required for pay-later bookings.");
+      stage = "booking_insert";
       const booking = await db.createBookingAtomic(
   {
     ...result.value,
@@ -228,7 +231,16 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       if (!booking) return fail(res, 409, "The selected room is no longer available.");
       if (!booking.email_sent_at && mailer) mailer.sendBooking(booking, config.contact).then(() => db.markEmailSent(booking.id)).catch(() => logger.error("BOOKING_EMAIL_FAILED", { booking_id: booking.booking_id }));
       return res.status(201).json({ success: true, booking_id: booking.booking_id, booking: [booking] });
-    } catch (error) { next(error); }
+    } catch (error) {
+      logger.error("BOOKING_CREATE_FAILED", { request_id: req.id, stage, operation: error.operation, database_code: error.code, error_name: error.name });
+      if (stage === "payment_verification") return fail(res, 503, "Payment verification is temporarily unavailable. Please contact support before retrying payment.", undefined, "PAYMENT_LOOKUP_FAILED");
+      if (stage === "booking_insert") {
+        if (error.code === "23505") return fail(res, 409, "This booking or payment has already been submitted.", undefined, "BOOKING_ALREADY_EXISTS");
+        if (error.code === "23502" || error.code === "23503" || error.code === "23514" || error.code === "42883" || String(error.code || "").startsWith("PGRST")) return fail(res, 503, "Booking could not be saved because the booking service schema is not ready. Please contact support.", undefined, "BOOKING_SCHEMA_ERROR");
+        return fail(res, 503, "Booking storage is temporarily unavailable. Please try again shortly.", undefined, "BOOKING_STORAGE_FAILED");
+      }
+      next(error);
+    }
   });
 
   app.post("/create-review", async (req, res, next) => { try { const result = validateReview(req.body); if (!result.valid) return fail(res, 422, "Invalid review.", result.errors); await db.createReview(result.value); return res.status(201).json({ success: true, message: "Review submitted successfully." }); } catch (error) { next(error); } });

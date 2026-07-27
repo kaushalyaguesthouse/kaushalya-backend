@@ -9,6 +9,12 @@ test("booking validation rejects past dates and untrusted values", () => { const
 test("booking validation produces authoritative price", () => { const result = validateBooking({ customer_name: "Guest Name", email: "guest@example.com", phone: "+919876543210", room_type: "Standard", check_in: "2026-08-01", check_out: "2026-08-09", adults: 2, children: 1, payment_type: "Razorpay" }, config, new Date("2026-07-25T00:00:00Z")); assert.equal(result.valid, true); assert.equal(result.value.total_amount, 12600); });
 test("half-open overlap permits same-day turnover", () => { assert.equal(overlaps("2026-08-01", "2026-08-03", "2026-08-03", "2026-08-05"), false); assert.equal(overlaps("2026-08-01", "2026-08-04", "2026-08-03", "2026-08-05"), true); });
 test("reviews are validated and HTML delimiters removed", () => { const good = validateReview({ name: "Guest", email: "g@example.com", rating: 5, review: "<b>Wonderful stay</b>" }); assert.equal(good.valid, true); assert.equal(good.value.review.includes("<"), false); assert.equal(validateReview({ name: "x", email: "bad", rating: 6, review: "short" }).valid, false); });
+
+test("legacy Pay at Hotel form value is normalized to Pay Later", () => {
+  const result = validateBooking({ customer_name: "Guest", email: "g@example.com", phone: "9999999999", room_type: "Standard", check_in: "2026-08-01", check_out: "2026-08-02", adults: 1, payment_method: "Pay at Hotel" }, config, new Date("2026-07-27T00:00:00Z"));
+  assert.equal(result.valid, true);
+  assert.equal(result.value.payment_type, "Pay Later");
+});
 test("Razorpay signature uses constant-time HMAC comparison", () => { const signature = crypto.createHmac("sha256", "secret").update("order|payment").digest("hex"); assert.equal(verifySignature("order", "payment", signature, "secret"), true); assert.equal(verifySignature("order", "payment", "bad", "secret"), false); });
 test("admin tokens expire and reject tampering", () => { const token = signAdminToken("long-secret", 60, 1000); assert.equal(verifyAdminToken(token, "long-secret", 2000), true); assert.equal(verifyAdminToken(`${token}x`, "long-secret", 2000), false); assert.equal(verifyAdminToken(token, "long-secret", 62000), false); });
 
