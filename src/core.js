@@ -114,21 +114,33 @@ function createAvailabilityReport(bookings, rooms, startDate, endDate, roomType,
 
 function createAnalyticsSummary(bookings, rooms, generatedAt = new Date()) {
   const now = new Date(generatedAt);
-  const today = now.toISOString().slice(0, 10);
-  const year = now.getUTCFullYear();
-  const monthStart = `${year}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
+  const timezone = "Asia/Kolkata";
+  const businessDate = (value) => {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(date);
+  };
+  const today = businessDate(now);
+  const [year, month] = today.split("-").map(Number);
+  const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
   const yearStart = `${year}-01-01`;
-  const weekStartDate = new Date(Date.UTC(year, now.getUTCMonth(), now.getUTCDate()));
+  const todayDate = new Date(`${today}T00:00:00.000Z`);
+  const weekStartDate = new Date(todayDate);
   weekStartDate.setUTCDate(weekStartDate.getUTCDate() - ((weekStartDate.getUTCDay() + 6) % 7));
   const weekStart = weekStartDate.toISOString().slice(0, 10);
-  const trendStartDate = new Date(Date.UTC(year, now.getUTCMonth(), now.getUTCDate()));
+  const trendStartDate = new Date(todayDate);
   trendStartDate.setUTCDate(trendStartDate.getUTCDate() - 29);
   const trendStart = trendStartDate.toISOString().slice(0, 10);
   const rows = Array.isArray(bookings) ? bookings : [];
   const amount = (row) => Number(row.amount) || 0;
   const collected = (row) => row.payment_status === "Verified" ? Number(row.advance_amount) || 0 : 0;
   const booked = (row) => ["Confirmed", "Completed"].includes(row.booking_status) ? amount(row) : 0;
-  const createdDate = (row) => String(row.created_at || "").slice(0, 10);
+  const createdDate = (row) => businessDate(row.created_at);
   const totalsSince = (start) => rows.reduce((totals, row) => {
     if (createdDate(row) >= start && createdDate(row) <= today) {
       totals.verified_online_collections += collected(row);
@@ -176,7 +188,7 @@ function createAnalyticsSummary(bookings, rooms, generatedAt = new Date()) {
     room_type_performance: roomTypePerformance,
     daily_trends: dailyTrends,
     generated_at: now.toISOString(),
-    timezone: "UTC"
+    timezone
   };
 }
 
