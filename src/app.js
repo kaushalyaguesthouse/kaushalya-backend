@@ -384,7 +384,36 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   });
   app.get("/admin/analytics/summary", admin, async (_req, res, next) => {
     try {
-      const analytics = createAnalyticsSummary(await db.analyticsBookings(), config.rooms);
+      const bookings = await db.analyticsBookings();
+      logger.info?.("ADMIN_ANALYTICS_BOOKINGS_LOADED", {
+        total_booking_rows: bookings.length,
+        bookings: bookings.map((booking) => ({
+          created_at: booking.created_at,
+          check_in: booking.check_in,
+          check_out: booking.check_out,
+          room_type: booking.room_type,
+          booking_status: booking.booking_status,
+          payment_status: booking.payment_status,
+          amount: booking.amount
+        }))
+      });
+      const analytics = createAnalyticsSummary(bookings, config.rooms);
+      const numericValues = {};
+      const collectNumericValues = (value, path = "") => {
+        if (typeof value === "number") numericValues[path] = value;
+        else if (value && typeof value === "object") {
+          for (const [key, item] of Object.entries(value)) collectNumericValues(item, path ? `${path}.${key}` : key);
+        }
+      };
+      collectNumericValues(analytics);
+      logger.info?.("ADMIN_ANALYTICS_SUMMARY_CALCULATED", {
+        business_date: analytics.daily_trends.at(-1)?.date,
+        today_booking_count: analytics.summary.today_bookings,
+        gross_booked_value: analytics.revenue_totals.today.gross_booked_value,
+        current_guest_count: analytics.summary.current_guests,
+        analytics_keys: Object.keys(analytics),
+        analytics_numeric_values: numericValues
+      });
       return res.json({ success: true, analytics, ...analytics });
     }
     catch (e) { next(e); }
