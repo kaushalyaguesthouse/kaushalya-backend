@@ -166,7 +166,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     try {
       const result = validate({ ...req.body, customer_name: req.body.customer_name || "Availability", email: req.body.email || "availability@example.com", phone: req.body.phone || "9999999999", adults: req.body.adults || 1, payment_type: req.body.payment_type || "Pay Later" });
       if (result.errors.room_type || result.errors.check_in || result.errors.check_out) return fail(res, 422, "Invalid availability request.", result.errors);
-      const remaining = await db.availability(result.value.room_type, result.value.check_in, result.value.check_out, config.rooms[result.value.room_type].inventory);
+      const remaining = await db.availability(result.value.room_type, result.value.check_in, result.value.check_out);
       return res.json({ success: true, available: remaining > 0, remaining, room_type: result.value.room_type, check_in: result.value.check_in, check_out: result.value.check_out });
     } catch (error) { next(error); }
   });
@@ -233,8 +233,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
 
     razorpay_order_id: payment.razorpay_order_id || null,
     razorpay_payment_id: payment.razorpay_payment_id || null
-  },
-  config.rooms[result.value.room_type].inventory
+  }
 );
       if (!booking) {
         stage = "availability_commit";

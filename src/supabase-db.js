@@ -69,7 +69,7 @@ const REQUIRED_SCHEMA = Object.freeze({
   bookings: "id,booking_id,customer_name,phone,email,room_type,check_in,check_out,booking_status,payment_status,amount,advance_amount,refund_amount,created_at",
   payment_orders: "id,idempotency_key,razorpay_order_id,razorpay_payment_id,status",
   reviews: "id,customer_name,customer_email,rating,review,status,created_at",
-  room_types: "id,name,is_active", rooms: "id,room_number,room_type_id,floor,operational_status,housekeeping_status,is_active",
+  room_types: "id,name,is_active,inventory_count", rooms: "id,room_number,room_type_id,floor,operational_status,housekeeping_status,is_active",
   booking_room_assignments: "id,booking_id,room_id,allocation_range,assignment_status",
   booking_stays: "booking_id,stay_status,checked_in_at,checked_out_at",
   housekeeping_tasks: "id,booking_id,room_id,task_type,status",
@@ -121,12 +121,12 @@ function createSupabaseDb(supabase, logger = console, connection = {}) {
       });
       return diagnostic.success;
     },
-    async availability(room, start, end, inventory) { const data = assert(await supabase.rpc("room_availability", { requested_room_type: room, requested_check_in: start, requested_check_out: end, configured_inventory: inventory }), "room_availability"); const result = Array.isArray(data) ? data[0] : data; return Math.max(0, Number(result?.remaining) || 0); },
+    async availability(room, start, end) { const data = assert(await supabase.rpc("room_availability", { requested_room_type: room, requested_check_in: start, requested_check_out: end }), "room_availability"); const result = Array.isArray(data) ? data[0] : data; return Math.max(0, Number(result?.remaining) || 0); },
     async findOrderByKey(key) { return assert(await supabase.from("payment_orders").select("*").eq("idempotency_key", key).maybeSingle()); },
     async saveOrder(order) { return assert(await supabase.from("payment_orders").insert(order).select().single()); },
     async verifyOrder(fields) { const existing = assert(await supabase.from("payment_orders").select("*").eq("razorpay_order_id", fields.razorpay_order_id).maybeSingle()); if (!existing) return null; return assert(await supabase.from("payment_orders").update({ ...fields, status: "verified", verified_at: new Date().toISOString() }).eq("id", existing.id).select().single()); },
     async getVerifiedOrder(orderId, paymentId) { if (!orderId || !paymentId) return null; return assert(await supabase.from("payment_orders").select("*").eq("razorpay_order_id", orderId).eq("razorpay_payment_id", paymentId).eq("status", "verified").maybeSingle(), "verified_order_lookup"); },
-    async createBookingAtomic(booking, inventory) { const data = assert(await supabase.rpc("create_booking_atomic", { booking_data: booking, room_inventory: inventory }), "create_booking_atomic"); return Array.isArray(data) ? data[0] : data; },
+    async createBookingAtomic(booking) { const data = assert(await supabase.rpc("create_booking_atomic", { booking_data: booking }), "create_booking_atomic"); return Array.isArray(data) ? data[0] : data; },
     async markEmailSent(id) { return assert(await supabase.from("bookings").update({ email_sent_at: new Date().toISOString() }).eq("id", id).is("email_sent_at", null)); },
     async createReview(review) { return assert(await supabase.from("reviews").insert({ ...review, status: "pending" })); },
     async approvedReviews() { return assert(await supabase.from("reviews").select("id,customer_name,rating,review,created_at").eq("status", "approved").order("created_at", { ascending: false }).limit(100)); },
