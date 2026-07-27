@@ -5,6 +5,7 @@ const packageInfo = require("../package.json");
 const { helmet, requestContext, validateRequest } = require("./security");
 const { createAnalyticsSummary, createAvailabilityReport, validateAvailabilityQuery, validateBooking, validateReview, verifySignature, signAdminToken, verifyAdminToken } = require("./core");
 const { SETTING_FIELDS, csv, dateRange, invoiceFrom, occupancySummary, pdf, revenueSummary } = require("./business");
+const { redact } = require("./logger");
 
 function createRateLimiter(limit = 120, windowMs = 60000) {
   const clients = new Map();
@@ -199,6 +200,16 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     let stage = "validation";
     const bookingFail = (status, message, errors, code) => {
       const response = { success: false, message, ...(errors && { errors }), ...(code && { code }) };
+      if (status === 422) logger.info?.("BOOKING_VALIDATION_FAILED", {
+        request_id: req.id,
+        status,
+        validation_stage: stage,
+        validation_error_code: code || "BOOKING_VALIDATION_FAILED",
+        validation_message: message,
+        field_names: Object.keys(errors || {}),
+        request_payload: redact(req.body),
+        response
+      });
       if (status === 409) logger.info?.("BOOKING_CONFLICT", { request_id: req.id, stage, code: response.code, message: response.message });
       return res.status(status).json(response);
     };
@@ -492,7 +503,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     const clientError = error.type === "entity.parse.failed" || error.type === "entity.too.large" || error.status === 403;
     const status = error.type === "entity.too.large" ? 413 : error.status === 403 ? 403 : clientError ? 400 : 500;
     const code = error.code === "CORS_DENIED" ? "CORS_DENIED" : error.type === "entity.too.large" ? "PAYLOAD_TOO_LARGE" : error.type === "entity.parse.failed" ? "INVALID_JSON" : "INTERNAL_ERROR";
-    logger.error("REQUEST_FAILED", { request_id: req.id, method: req.method, path: req.path, status, error_name: error.name, code });
+    logger.error("REQUEST_FAILED", { request_id: req.id, method: req.method, path: req.path, status, error_name: error.name, code, stack: error.stack });
     return res.status(status).json({ success: false, message: status === 500 ? "An internal server error occurred." : status === 413 ? "Request body is too large." : status === 403 ? "Origin is not allowed." : "Request body is not valid JSON.", code });
   });
   return app;

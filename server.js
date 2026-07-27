@@ -41,7 +41,7 @@ if (require.main === module) {
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
-  process.on("uncaughtException", (error) => { logger.error("UNEXPECTED_ERROR", { error_name: error.name }); shutdown("uncaughtException"); });
-  process.on("unhandledRejection", (error) => { logger.error("UNEXPECTED_REJECTION", { error_name: error?.name || "Error" }); shutdown("unhandledRejection"); });
+  process.on("uncaughtException", (error) => { logger.error("UNEXPECTED_ERROR", { error_name: error.name, stack: error.stack }); shutdown("uncaughtException"); });
+  process.on("unhandledRejection", (error) => { logger.error("UNEXPECTED_REJECTION", { error_name: error?.name || "Error", stack: error?.stack }); shutdown("unhandledRejection"); });
 }
 module.exports = app;
