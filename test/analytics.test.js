@@ -27,7 +27,7 @@ test("analytics applies booking, occupancy, revenue, and payment rules", () => {
   assert.equal(result.daily_trends.length, 30);
   assert.deepEqual(result.daily_trends.at(-1), { date: "2026-07-26", bookings: 2, gross_booked_value: 1000, verified_online_collections: 300 });
   assert.equal(result.generated_at, now.toISOString());
-  assert.equal(result.timezone, "UTC");
+  assert.equal(result.timezone, "Asia/Kolkata");
   for (const forbidden of ["Private Guest", "private@example.com", "9999999999", "secret", "pay_secret", "booking_payload"]) assert.equal(JSON.stringify(result).includes(forbidden), false);
 });
 
@@ -55,6 +55,19 @@ test("a new Pay Later booking appears with fewer than 1,000 analytics rows", () 
   assert.deepEqual(result.daily_trends.at(-1), { date: "2026-07-26", bookings: 1, gross_booked_value: 1800, verified_online_collections: 0 });
 });
 
+test("analytics assigns UTC timestamps to the Asia/Kolkata business date", () => {
+  const nearMidnightUtc = {
+    room_type: "Standard", check_in: "2026-07-27", check_out: "2026-07-28",
+    adults: 2, children: 1, booking_status: "Confirmed", payment_status: "Pending",
+    amount: 1800, advance_amount: 0, created_at: "2026-07-26T20:00:00Z"
+  };
+  const result = createAnalyticsSummary([nearMidnightUtc], rooms, new Date("2026-07-26T20:30:00Z"));
+  assert.deepEqual(result.summary, { today_bookings: 1, today_revenue: 0, current_guests: 3, rooms: 3 });
+  assert.deepEqual(result.revenue_totals.today, { verified_online_collections: 0, gross_booked_value: 1800 });
+  assert.deepEqual(result.daily_trends.at(-1), { date: "2026-07-27", bookings: 1, gross_booked_value: 1800, verified_online_collections: 0 });
+  assert.equal(result.timezone, "Asia/Kolkata");
+});
+
 test("analytics summary route requires existing admin authentication and returns no PII", async () => {
   const config = { origins: [], rooms, adminSecret: "analytics-secret", paymentMethods: [] };
   const createdToday = new Date().toISOString();
@@ -76,7 +89,7 @@ test("analytics summary route requires existing admin authentication and returns
     assert.equal(body.analytics.revenue_totals.today.gross_booked_value, 2000);
     assert.equal(body.analytics.payment_statistics.by_status.Pending, 1);
     assert.match(body.generated_at, /^\d{4}-\d{2}-\d{2}T/);
-    assert.equal(body.timezone, "UTC");
+    assert.equal(body.timezone, "Asia/Kolkata");
     for (const forbidden of ["Private Guest", "private@example.com", "9999999999", "secret", "pay_secret", "razorpay"]) assert.equal(JSON.stringify(body).toLowerCase().includes(forbidden.toLowerCase()), false);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
