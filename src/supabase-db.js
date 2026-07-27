@@ -145,7 +145,7 @@ function createSupabaseDb(supabase, logger = console, connection = {}) {
         q = q.or(`booking_id.ilike."%${term}%",customer_name.ilike."%${term}%",phone.ilike."%${term}%"`);
       }
       const result = await q;
-      if (result.error) throw new Error(result.error.message);
+      if (result.error) throw new DatabaseError(result.error, "admin_bookings_list");
       return { items: result.data, total: result.count || 0 };
     },
     async rooms(filters) {

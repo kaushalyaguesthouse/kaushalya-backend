@@ -1,5 +1,4 @@
 const crypto = require("crypto");
-const { canonicalRoomType } = require("./room-types");
 const { normalizeBookingRequest } = require("./booking-contract");
 
 const DAY_MS = 86400000;
@@ -28,8 +27,7 @@ function calculatePrice(roomPrice, nights) {
   return { nights, complimentary_nights: nights - paidNights, paid_nights: paidNights, total_amount: roomPrice * paidNights };
 }
 
-function validateBooking(body, config, today = new Date()) {
-  body = normalizeBookingRequest(body);
+function validateNormalizedBooking(body, config, today = new Date()) {
   const errors = {};
   const customer_name = text(body.customer_name ?? body.guest_name, 100);
   const email = text(body.email, 254).toLowerCase();
@@ -43,8 +41,7 @@ function validateBooking(body, config, today = new Date()) {
   if (customer_name.length < 2) errors.customer_name = "Guest name must be at least 2 characters.";
   if (!EMAIL_RE.test(email)) errors.email = "A valid email is required.";
   if (!PHONE_RE.test(phone)) errors.phone = "A valid Indian mobile number is required.";
-  const pricingRoomType = canonicalRoomType(room_type);
-  if (!config.rooms[pricingRoomType]) errors.room_type = "Unknown room type.";
+  if (!config.rooms[room_type]) errors.room_type = "Unknown room type.";
   const nights = nightsBetween(check_in, check_out);
   const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
   const start = parseDate(check_in);
@@ -56,8 +53,12 @@ function validateBooking(body, config, today = new Date()) {
   if (!Number.isInteger(children) || children < 0 || children > config.maxGuests) errors.children = "Child count is invalid.";
   if (Number.isInteger(adults) && Number.isInteger(children) && adults + children > config.maxGuests) errors.guests = `Guest count cannot exceed ${config.maxGuests}.`;
   if (!config.paymentMethods.includes(payment_type)) errors.payment_type = "Unsupported payment method.";
-  const pricing = config.rooms[pricingRoomType] && nights > 0 ? calculatePrice(config.rooms[pricingRoomType].price, nights) : null;
-  return { valid: Object.keys(errors).length === 0, errors, value: { customer_name, email, phone, room_type: pricingRoomType, check_in, check_out, adults, children, payment_type, special_request: text(body.special_request, 1000), ...pricing } };
+  const pricing = config.rooms[room_type] && nights > 0 ? calculatePrice(config.rooms[room_type].price, nights) : null;
+  return { valid: Object.keys(errors).length === 0, errors, value: { customer_name, email, phone, room_type, check_in, check_out, adults, children, payment_type, special_request: text(body.special_request, 1000), ...pricing } };
+}
+
+function validateBooking(body, config, today = new Date()) {
+  return validateNormalizedBooking(normalizeBookingRequest(body), config, today);
 }
 
 function validateReview(body) {
@@ -193,4 +194,4 @@ function verifyAdminToken(token, secret, now = Date.now()) {
   try { const decoded = JSON.parse(Buffer.from(payload, "base64url")); return decoded.role === "admin" && decoded.exp > now / 1000; } catch { return false; }
 }
 
-module.exports = { calculatePrice, createAnalyticsSummary, createAvailabilityReport, nightsBetween, overlaps, signAdminToken, validateAvailabilityQuery, validateBooking, validateReview, verifyAdminToken, verifySignature };
+module.exports = { calculatePrice, createAnalyticsSummary, createAvailabilityReport, nightsBetween, overlaps, signAdminToken, validateAvailabilityQuery, validateBooking, validateNormalizedBooking, validateReview, verifyAdminToken, verifySignature };

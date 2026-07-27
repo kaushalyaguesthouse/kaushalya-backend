@@ -3,9 +3,11 @@ const cors = require("cors");
 const crypto = require("crypto");
 const packageInfo = require("../package.json");
 const { helmet, requestContext, validateRequest } = require("./security");
-const { createAnalyticsSummary, createAvailabilityReport, validateAvailabilityQuery, validateBooking, validateReview, verifySignature, signAdminToken, verifyAdminToken } = require("./core");
+const { createAnalyticsSummary, createAvailabilityReport, validateAvailabilityQuery, validateNormalizedBooking, validateReview, verifySignature, signAdminToken, verifyAdminToken } = require("./core");
 const { SETTING_FIELDS, csv, dateRange, invoiceFrom, occupancySummary, pdf, revenueSummary } = require("./business");
 const { redact } = require("./logger");
+const { normalizeBookingRequest } = require("./booking-contract");
+const { safeDiagnostic } = require("./supabase-db");
 
 function createRateLimiter(limit = 120, windowMs = 60000) {
   const clients = new Map();
@@ -133,10 +135,15 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
     return verifyAdminToken(token, config.adminSecret) ? next() : fail(res, 401, "Admin authentication required.");
   };
-  const validate = (body) => validateBooking(body, config);
+  const validate = (body) => validateNormalizedBooking(normalizeBookingRequest(body), config);
   const audit = (req, action, entity, entityId = null, details = {}) => {
     if (typeof db.createAuditLog !== "function") return;
-    db.createAuditLog({ user_name: "admin", action, entity, entity_id: entityId, ip: req.ip, details }).catch(() => logger.error("AUDIT_LOG_FAILED", { action }));
+    db.createAuditLog({ user_name: "admin", action, entity, entity_id: entityId, ip: req.ip, details }).catch((error) => logger.error("AUDIT_LOG_FAILED", {
+      action,
+      operation: error.operation || "audit_log_insert",
+      database_error_code: error.code || null,
+      database_error_message: safeDiagnostic(error.message || "Audit log insert failed.")?.slice(0, 300)
+    }));
   };
 
   app.get("/", (_req, res) => res.status(200).send("Kaushalya Guest House Backend Running"));
@@ -197,6 +204,8 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
   });
 
   app.post("/create-booking", async (req, res, next) => {
+    const normalizedRequest = normalizeBookingRequest(req.body);
+    logger.info?.("BOOKING_ROOM_NORMALIZED", { request_id: req.id, incoming_room_type: req.body?.room_type ?? null, normalized_room_type: normalizedRequest.room_type });
     let stage = "validation";
     const bookingFail = (status, message, errors, code) => {
       const response = { success: false, message, ...(errors && { errors }), ...(code && { code }) };
@@ -219,7 +228,7 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       return res.status(status).json(response);
     };
     try {
-      const result = validate(req.body);
+      const result = validateNormalizedBooking(normalizedRequest, config);
       if (!result.valid) return bookingFail(422, Object.values(result.errors)[0] || "Invalid booking information.", result.errors);
       stage = "authoritative_price";
       if (req.body.amount != null && Number(req.body.amount) !== result.value.total_amount) return bookingFail(409, "Booking amount does not match the authoritative price.", { amount: `Expected ${result.value.total_amount}.` }, "BOOKING_AMOUNT_MISMATCH");

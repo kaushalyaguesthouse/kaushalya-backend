@@ -1,3 +1,5 @@
+const { canonicalRoomType } = require("./room-types");
+
 function clean(value) {
   const trimmed = String(value ?? "").trim();
   if (trimmed.length >= 2 && ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))) return trimmed.slice(1, -1).trim();
@@ -17,10 +19,16 @@ function validateConfig(config) {
 }
 
 function loadConfig(env = process.env) {
-  const roomNames = clean(env.ROOM_TYPES || "Standard,Deluxe").split(",").map((x) => x.trim()).filter(Boolean);
+  const configuredRoomNames = clean(env.ROOM_TYPES || "Standard,Deluxe").split(",").map((x) => x.trim()).filter(Boolean);
+  const roomNames = [...new Set(configuredRoomNames.map(canonicalRoomType))];
   const rooms = Object.fromEntries(roomNames.map((name) => {
     const key = name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
-    return [name, { price: positiveInt(env[`ROOM_PRICE_${key}`], name === "Deluxe" ? 2500 : 1800), inventory: positiveInt(env[`ROOM_INVENTORY_${key}`], 1) }];
+    const legacyName = configuredRoomNames.find((configured) => canonicalRoomType(configured) === name);
+    const legacyKey = legacyName.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+    return [name, {
+      price: positiveInt(env[`ROOM_PRICE_${key}`] ?? env[`ROOM_PRICE_${legacyKey}`], name === "Deluxe" ? 2500 : 1800),
+      inventory: positiveInt(env[`ROOM_INVENTORY_${key}`] ?? env[`ROOM_INVENTORY_${legacyKey}`], 1)
+    }];
   }));
   return {
     port: positiveInt(env.PORT, 10000), nodeEnv: clean(env.NODE_ENV || "development"),
