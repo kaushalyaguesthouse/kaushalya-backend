@@ -36,7 +36,10 @@ function validateBooking(body, config, today = new Date()) {
   const check_out = String(body.check_out ?? "");
   const adults = Number(body.adults);
   const children = Number(body.children ?? 0);
-  const payment_type = text(body.payment_type ?? body.payment_method ?? "Pay Later", 30);
+  const suppliedPaymentType = text(body.payment_type ?? body.payment_method ?? "Pay Later", 30);
+  // The public form historically calls the offline option "Pay at Hotel".
+  // Keep one canonical database value while accepting that wire-level name.
+  const payment_type = suppliedPaymentType === "Pay at Hotel" ? "Pay Later" : suppliedPaymentType;
   if (customer_name.length < 2) errors.customer_name = "Guest name must be at least 2 characters.";
   if (!EMAIL_RE.test(email)) errors.email = "A valid email is required.";
   if (!PHONE_RE.test(phone)) errors.phone = "A valid Indian mobile number is required.";
