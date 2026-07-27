@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { canonicalRoomType } = require("./room-types");
+const { normalizeBookingRequest } = require("./booking-contract");
 
 const DAY_MS = 86400000;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -28,6 +29,7 @@ function calculatePrice(roomPrice, nights) {
 }
 
 function validateBooking(body, config, today = new Date()) {
+  body = normalizeBookingRequest(body);
   const errors = {};
   const customer_name = text(body.customer_name ?? body.guest_name, 100);
   const email = text(body.email, 254).toLowerCase();
@@ -37,10 +39,7 @@ function validateBooking(body, config, today = new Date()) {
   const check_out = String(body.check_out ?? "");
   const adults = Number(body.adults);
   const children = Number(body.children ?? 0);
-  const suppliedPaymentType = text(body.payment_type ?? body.payment_method ?? "Pay Later", 30);
-  // The public form historically calls the offline option "Pay at Hotel".
-  // Keep one canonical database value while accepting that wire-level name.
-  const payment_type = suppliedPaymentType === "Pay at Hotel" ? "Pay Later" : suppliedPaymentType;
+  const payment_type = text(body.payment_type, 30);
   if (customer_name.length < 2) errors.customer_name = "Guest name must be at least 2 characters.";
   if (!EMAIL_RE.test(email)) errors.email = "A valid email is required.";
   if (!PHONE_RE.test(phone)) errors.phone = "A valid Indian mobile number is required.";
@@ -58,7 +57,7 @@ function validateBooking(body, config, today = new Date()) {
   if (Number.isInteger(adults) && Number.isInteger(children) && adults + children > config.maxGuests) errors.guests = `Guest count cannot exceed ${config.maxGuests}.`;
   if (!config.paymentMethods.includes(payment_type)) errors.payment_type = "Unsupported payment method.";
   const pricing = config.rooms[pricingRoomType] && nights > 0 ? calculatePrice(config.rooms[pricingRoomType].price, nights) : null;
-  return { valid: Object.keys(errors).length === 0, errors, value: { customer_name, email, phone, room_type, check_in, check_out, adults, children, payment_type, special_request: text(body.special_request, 1000), ...pricing } };
+  return { valid: Object.keys(errors).length === 0, errors, value: { customer_name, email, phone, room_type: pricingRoomType, check_in, check_out, adults, children, payment_type, special_request: text(body.special_request, 1000), ...pricing } };
 }
 
 function validateReview(body) {

@@ -7,7 +7,7 @@
     "start": "node server.js",
     "audit:production": "node scripts/audit-production.js",
     "test": "node --test",
-    "check": "node --check server.js && node --check src/app.js && node --check src/business.js && node --check src/config.js && node --check src/core.js && node --check src/logger.js && node --check src/mailer.js && node --check src/security.js && node --check src/supabase-db.js && node --check src/production-audit.js && node --check scripts/audit-production.js"
+    "check": "node --check server.js && node --check src/app.js && node --check src/booking-contract.js && node --check src/business.js && node --check src/config.js && node --check src/core.js && node --check src/logger.js && node --check src/mailer.js && node --check src/security.js && node --check src/supabase-db.js && node --check src/production-audit.js && node --check scripts/audit-production.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.56.0",

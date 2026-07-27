@@ -202,6 +202,11 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
       const response = { success: false, message, ...(errors && { errors }), ...(code && { code }) };
       if (status === 422) logger.info?.("BOOKING_VALIDATION_FAILED", {
         request_id: req.id,
+        stage,
+        code: code || "BOOKING_VALIDATION_FAILED",
+        message,
+        affected_fields: Object.keys(errors || {}),
+        sanitized_payload: redact(req.body),
         status,
         validation_stage: stage,
         validation_error_code: code || "BOOKING_VALIDATION_FAILED",
@@ -210,12 +215,12 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
         request_payload: redact(req.body),
         response
       });
-      if (status === 409) logger.info?.("BOOKING_CONFLICT", { request_id: req.id, stage, code: response.code, message: response.message });
+      if (status === 409) logger.info?.("BOOKING_CONFLICT", { request_id: req.id, stage, code: response.code, message: response.message, affected_fields: Object.keys(errors || {}), sanitized_payload: redact(req.body) });
       return res.status(status).json(response);
     };
     try {
       const result = validate(req.body);
-      if (!result.valid) return bookingFail(422, "Invalid booking information.", result.errors);
+      if (!result.valid) return bookingFail(422, Object.values(result.errors)[0] || "Invalid booking information.", result.errors);
       stage = "authoritative_price";
       if (req.body.amount != null && Number(req.body.amount) !== result.value.total_amount) return bookingFail(409, "Booking amount does not match the authoritative price.", { amount: `Expected ${result.value.total_amount}.` }, "BOOKING_AMOUNT_MISMATCH");
       let payment = { status: "pending" };
@@ -250,10 +255,11 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
         stage = "availability_commit";
         return bookingFail(409, "The selected room is no longer available.", undefined, "ROOM_NO_LONGER_AVAILABLE");
       }
+      logger.info?.("BOOKING_CREATED", { request_id: req.id, stage: "complete", code: "BOOKING_CREATED", message: "Booking created.", affected_fields: [], sanitized_payload: redact(req.body), booking_id: booking.booking_id });
       if (!booking.email_sent_at && mailer) mailer.sendBooking(booking, config.contact).then(() => db.markEmailSent(booking.id)).catch(() => logger.error("BOOKING_EMAIL_FAILED", { booking_id: booking.booking_id }));
       return res.status(201).json({ success: true, booking_id: booking.booking_id, booking: [booking] });
     } catch (error) {
-      logger.error("BOOKING_CREATE_FAILED", { request_id: req.id, stage, operation: error.operation, database_code: error.code, error_name: error.name });
+      logger.error("BOOKING_DATABASE_FAILED", { request_id: req.id, stage, code: error.code || "BOOKING_DATABASE_FAILED", message: "Booking database operation failed.", affected_fields: [], sanitized_payload: redact(req.body), rpc_error_code: error.code, rpc_error_message: error.operation ? `${error.operation} failed.` : "Database operation failed.", operation: error.operation, error_name: error.name });
       if (stage === "payment_verification") return bookingFail(503, "Payment verification is temporarily unavailable. Please contact support before retrying payment.", undefined, "PAYMENT_LOOKUP_FAILED");
       if (stage === "booking_insert") {
         if (error.code === "23505") return bookingFail(409, "This booking or payment has already been submitted.", undefined, "BOOKING_ALREADY_EXISTS");

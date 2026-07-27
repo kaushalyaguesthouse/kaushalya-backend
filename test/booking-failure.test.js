@@ -15,7 +15,7 @@ test("booking schema failures return an actionable safe response and diagnostic 
     const response = await fetch(`http://127.0.0.1:${server.address().port}/create-booking`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "booking-1" }, body: JSON.stringify(request) });
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), { success: false, message: "Booking could not be saved because the booking service schema is not ready. Please contact support.", code: "BOOKING_SCHEMA_ERROR" });
-    assert.deepEqual(logs.find(({ event }) => event === "BOOKING_CREATE_FAILED").fields.stage, "booking_insert");
+    assert.deepEqual(logs.find(({ event }) => event === "BOOKING_DATABASE_FAILED").fields.stage, "booking_insert");
     assert.equal(JSON.stringify(logs).includes("refund_status"), false);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
@@ -38,9 +38,10 @@ test("every create-booking conflict logs its request ID, stage, response code, a
       assert.equal(response.status, 409, scenario.name);
       const payload = await response.json();
       const conflict = logs.find(({ event }) => event === "BOOKING_CONFLICT");
-      assert.deepEqual(conflict, { event: "BOOKING_CONFLICT", fields: { request_id: `request-${scenario.name}`, stage: scenario.stage, code: scenario.code, message: payload.message } });
+      assert.equal(conflict.event, "BOOKING_CONFLICT");
+      assert.deepEqual({ request_id: conflict.fields.request_id, stage: conflict.fields.stage, code: conflict.fields.code, message: conflict.fields.message }, { request_id: `request-${scenario.name}`, stage: scenario.stage, code: scenario.code, message: payload.message });
       assert.equal(payload.code, scenario.code);
-      assert.deepEqual(Object.keys(conflict.fields).sort(), ["code", "message", "request_id", "stage"]);
+      assert.deepEqual(Object.keys(conflict.fields).sort(), ["affected_fields", "code", "message", "request_id", "sanitized_payload", "stage"]);
       assert.equal(JSON.stringify(logs).includes("sensitive database detail"), false);
     } finally { await new Promise((resolve) => server.close(resolve)); }
   }
@@ -57,18 +58,21 @@ test("create-booking validation failures log complete sanitized diagnostics and 
     assert.equal(response.status, 422);
     const responseBody = await response.json();
     const diagnostic = logs.find(({ event }) => event === "BOOKING_VALIDATION_FAILED");
-    assert.deepEqual(diagnostic, {
-      event: "BOOKING_VALIDATION_FAILED",
-      fields: {
+    assert.equal(diagnostic.event, "BOOKING_VALIDATION_FAILED");
+    assert.deepEqual(diagnostic.fields, {
         request_id: "request-validation",
+        stage: "validation",
+        code: "BOOKING_VALIDATION_FAILED",
+        message: "A valid email is required.",
+        affected_fields: Object.keys(responseBody.errors),
+        sanitized_payload: { ...body, password: "[REDACTED]", razorpay_signature: "[REDACTED]" },
         status: 422,
         validation_stage: "validation",
         validation_error_code: "BOOKING_VALIDATION_FAILED",
-        validation_message: "Invalid booking information.",
+        validation_message: "A valid email is required.",
         field_names: Object.keys(responseBody.errors),
         request_payload: { ...body, password: "[REDACTED]", razorpay_signature: "[REDACTED]" },
         response: responseBody
-      }
     });
     assert.equal(JSON.stringify(logs).includes("do-not-log"), false);
     assert.equal(JSON.stringify(logs).includes("also-secret"), false);
