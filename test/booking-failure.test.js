@@ -45,3 +45,32 @@ test("every create-booking conflict logs its request ID, stage, response code, a
     } finally { await new Promise((resolve) => server.close(resolve)); }
   }
 });
+
+test("create-booking validation failures log complete sanitized diagnostics and the exact response", async () => {
+  const logs = [];
+  const logger = { error() {}, info(event, fields) { logs.push({ event, fields }); } };
+  const body = { ...request, email: "not-an-email", password: "do-not-log", razorpay_signature: "also-secret" };
+  const server = createApp({ config, db: {}, razorpay: {}, logger }).listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/create-booking`, { method: "POST", headers: { "content-type": "application/json", "x-request-id": "request-validation" }, body: JSON.stringify(body) });
+    assert.equal(response.status, 422);
+    const responseBody = await response.json();
+    const diagnostic = logs.find(({ event }) => event === "BOOKING_VALIDATION_FAILED");
+    assert.deepEqual(diagnostic, {
+      event: "BOOKING_VALIDATION_FAILED",
+      fields: {
+        request_id: "request-validation",
+        status: 422,
+        validation_stage: "validation",
+        validation_error_code: "BOOKING_VALIDATION_FAILED",
+        validation_message: "Invalid booking information.",
+        field_names: Object.keys(responseBody.errors),
+        request_payload: { ...body, password: "[REDACTED]", razorpay_signature: "[REDACTED]" },
+        response: responseBody
+      }
+    });
+    assert.equal(JSON.stringify(logs).includes("do-not-log"), false);
+    assert.equal(JSON.stringify(logs).includes("also-secret"), false);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
