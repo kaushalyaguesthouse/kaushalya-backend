@@ -166,7 +166,16 @@ function createSupabaseDb(supabase, logger = console, connection = {}) {
       return rooms.map((room) => ({ ...room, ...(occupiedIds.has(room.id) && { stay_status: "checked_in" }) }));
     },
     async adminAvailability(start, end, roomType) { const exclusiveEnd = new Date(`${end}T00:00:00.000Z`); exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1); let q = supabase.from("bookings").select("id,booking_id,room_type,check_in,check_out,booking_status").lt("check_in", exclusiveEnd.toISOString().slice(0, 10)).gt("check_out", start).order("check_in", { ascending: true }); if (roomType) q = q.eq("room_type", roomType); return assert(await q); },
-    async analyticsBookings() { return assert(await supabase.from("bookings").select("room_type,check_in,check_out,adults,children,booking_status,payment_status,amount,advance_amount,created_at")); },
+    async analyticsBookings() {
+      const fields = "room_type,check_in,check_out,adults,children,booking_status,payment_status,amount,advance_amount,created_at";
+      const pageSize = 1000;
+      const rows = [];
+      for (let offset = 0; ; offset += pageSize) {
+        const page = assert(await supabase.from("bookings").select(fields).order("created_at", { ascending: true }).range(offset, offset + pageSize - 1));
+        rows.push(...page);
+        if (page.length < pageSize) return rows;
+      }
+    },
     async assignRoom(bookingId, roomId, actor) { return assert(await supabase.rpc("assign_booking_room", { target_booking_id: bookingId, target_room_id: roomId, actor })); },
     async releaseRoom(bookingId, actor, reason) { return assert(await supabase.rpc("release_booking_room", { target_booking_id: bookingId, actor, reason })); },
     async roomAssignments(bookingId) {

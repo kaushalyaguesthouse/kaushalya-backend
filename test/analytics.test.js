@@ -40,9 +40,26 @@ test("analytics handles an empty database and zero inventory", () => {
   assert.equal(result.daily_trends.length, 30);
 });
 
+test("a new Pay Later booking appears with fewer than 1,000 analytics rows", () => {
+  const payLater = {
+    room_type: "Standard", check_in: "2026-07-27", check_out: "2026-07-28",
+    adults: 1, children: 0, booking_status: "Confirmed", payment_status: "Pending",
+    amount: 1800, advance_amount: 0, created_at: "2026-07-26T11:00:00Z"
+  };
+  const result = createAnalyticsSummary([payLater], rooms, now);
+  assert.equal(result.summary.today_bookings, 1);
+  assert.equal(result.revenue_totals.today.gross_booked_value, 1800);
+  assert.equal(result.revenue_totals.today.verified_online_collections, 0);
+  assert.equal(result.booking_status_totals.Confirmed, 1);
+  assert.equal(result.payment_statistics.by_status.Pending, 1);
+  assert.deepEqual(result.daily_trends.at(-1), { date: "2026-07-26", bookings: 1, gross_booked_value: 1800, verified_online_collections: 0 });
+});
+
 test("analytics summary route requires existing admin authentication and returns no PII", async () => {
   const config = { origins: [], rooms, adminSecret: "analytics-secret", paymentMethods: [] };
-  const db = { analyticsBookings: async () => bookings };
+  const createdToday = new Date().toISOString();
+  const routeBookings = [{ ...bookings[1], booking_status: "Confirmed", created_at: createdToday }];
+  const db = { analyticsBookings: async () => routeBookings };
   const server = createApp({ config, db, razorpay: {}, logger: { error() {} } }).listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   try {
@@ -52,7 +69,12 @@ test("analytics summary route requires existing admin authentication and returns
     response = await fetch(url, { headers: { authorization: `Bearer ${signAdminToken(config.adminSecret)}` } });
     assert.equal(response.status, 200);
     const body = await response.json();
+    assert.deepEqual(Object.keys(body).sort(), ["analytics", "booking_status_totals", "daily_trends", "generated_at", "occupancy", "payment_statistics", "revenue_totals", "room_type_performance", "success", "summary", "timezone"]);
     assert.equal(body.success, true);
+    assert.deepEqual(body.analytics.summary, body.summary);
+    assert.deepEqual(body.analytics.summary, { today_bookings: 1, today_revenue: 0, current_guests: 0, rooms: 3 });
+    assert.equal(body.analytics.revenue_totals.today.gross_booked_value, 2000);
+    assert.equal(body.analytics.payment_statistics.by_status.Pending, 1);
     assert.match(body.generated_at, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(body.timezone, "UTC");
     for (const forbidden of ["Private Guest", "private@example.com", "9999999999", "secret", "pay_secret", "razorpay"]) assert.equal(JSON.stringify(body).toLowerCase().includes(forbidden.toLowerCase()), false);

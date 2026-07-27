@@ -114,6 +114,17 @@ function validateUuid(req, res, next) {
 }
 
 function createApp({ config, db, razorpay, mailer, logger = console }) {
+  const emailDeliveries = new Set();
+  function deliverBookingEmail(booking) {
+    if (booking.email_sent_at || !mailer || emailDeliveries.has(booking.id)) return;
+    emailDeliveries.add(booking.id);
+    setImmediate(() => {
+      mailer.sendBooking(booking, config.contact)
+        .then(() => db.markEmailSent(booking.id))
+        .catch((error) => logger.error("BOOKING_EMAIL_FAILED", { booking_id: booking.booking_id, error_name: error?.name }))
+        .finally(() => emailDeliveries.delete(booking.id));
+    });
+  }
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -265,8 +276,9 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
         return bookingFail(409, "The selected room is no longer available.", undefined, "ROOM_NO_LONGER_AVAILABLE");
       }
       logger.info?.("BOOKING_CREATED", { request_id: req.id, stage: "complete", code: "BOOKING_CREATED", message: "Booking created.", affected_fields: [], sanitized_payload: redact(req.body), booking_id: booking.booking_id });
-      if (!booking.email_sent_at && mailer) mailer.sendBooking(booking, config.contact).then(() => db.markEmailSent(booking.id)).catch(() => logger.error("BOOKING_EMAIL_FAILED", { booking_id: booking.booking_id }));
-      return res.status(201).json({ success: true, booking_id: booking.booking_id, booking: [booking] });
+      const response = res.status(201).json({ success: true, booking_id: booking.booking_id, booking: [booking] });
+      deliverBookingEmail(booking);
+      return response;
     } catch (error) {
       logger.error("BOOKING_DATABASE_FAILED", { request_id: req.id, stage, code: error.code || "BOOKING_DATABASE_FAILED", message: "Booking database operation failed.", affected_fields: [], sanitized_payload: redact(req.body), rpc_error_code: error.code, rpc_error_message: error.operation ? `${error.operation} failed.` : "Database operation failed.", operation: error.operation, error_name: error.name });
       if (stage === "payment_verification") return bookingFail(503, "Payment verification is temporarily unavailable. Please contact support before retrying payment.", undefined, "PAYMENT_LOOKUP_FAILED");
@@ -371,7 +383,10 @@ function createApp({ config, db, razorpay, mailer, logger = console }) {
     } catch (e) { next(e); }
   });
   app.get("/admin/analytics/summary", admin, async (_req, res, next) => {
-    try { return res.json({ success: true, ...createAnalyticsSummary(await db.analyticsBookings(), config.rooms) }); }
+    try {
+      const analytics = createAnalyticsSummary(await db.analyticsBookings(), config.rooms);
+      return res.json({ success: true, analytics, ...analytics });
+    }
     catch (e) { next(e); }
   });
   app.post("/admin/bookings/:id/assign-room", admin, validateUuid, async (req, res, next) => {

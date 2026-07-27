@@ -1,4 +1,5 @@
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PROVIDER_TIMEOUT_MS = 5000;
 
 function createMailer(config, logger = console) {
   if (!config.email.webhookUrl) return null;
@@ -17,7 +18,8 @@ function createMailer(config, logger = console) {
     const response = await fetch(config.email.webhookUrl, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${config.email.token}` },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS)
     });
     if (!response.ok) throw new Error(`${recipientType} email provider returned HTTP ${response.status}`);
   }
@@ -37,4 +39,4 @@ function createMailer(config, logger = console) {
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason), `${failures.length} booking email delivery request(s) failed`);
   } };
 }
-module.exports = { createMailer };
+module.exports = { createMailer, PROVIDER_TIMEOUT_MS };
