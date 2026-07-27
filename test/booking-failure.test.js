@@ -19,3 +19,29 @@ test("booking schema failures return an actionable safe response and diagnostic 
     assert.equal(JSON.stringify(logs).includes("refund_status"), false);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
+
+test("every create-booking conflict logs its request ID, stage, response code, and message", async () => {
+  const scenarios = [
+    { name: "price", body: { ...request, amount: 1 }, db: {}, stage: "authoritative_price", code: "BOOKING_AMOUNT_MISMATCH" },
+    { name: "payment", body: { ...request, payment_type: "Razorpay", razorpay_order_id: "order_1", razorpay_payment_id: "payment_1" }, db: { async getVerifiedOrder() { return { status: "verified", booking_payload: { room_type: "Standard", check_in: "2026-08-02", check_out: "2026-08-03" } }; } }, stage: "payment_booking_match", code: "PAYMENT_BOOKING_MISMATCH" },
+    { name: "availability", body: request, db: { async createBookingAtomic() { return null; } }, stage: "availability_commit", code: "ROOM_NO_LONGER_AVAILABLE" },
+    { name: "duplicate", body: request, db: { async createBookingAtomic() { throw Object.assign(new Error("sensitive database detail"), { code: "23505" }); } }, stage: "booking_insert", code: "BOOKING_ALREADY_EXISTS" }
+  ];
+
+  for (const scenario of scenarios) {
+    const logs = [];
+    const logger = { error() {}, info(event, fields) { logs.push({ event, fields }); } };
+    const server = createApp({ config, db: scenario.db, razorpay: {}, logger }).listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/create-booking`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": `booking-${scenario.name}`, "x-request-id": `request-${scenario.name}` }, body: JSON.stringify(scenario.body) });
+      assert.equal(response.status, 409, scenario.name);
+      const payload = await response.json();
+      const conflict = logs.find(({ event }) => event === "BOOKING_CONFLICT");
+      assert.deepEqual(conflict, { event: "BOOKING_CONFLICT", fields: { request_id: `request-${scenario.name}`, stage: scenario.stage, code: scenario.code, message: payload.message } });
+      assert.equal(payload.code, scenario.code);
+      assert.deepEqual(Object.keys(conflict.fields).sort(), ["code", "message", "request_id", "stage"]);
+      assert.equal(JSON.stringify(logs).includes("sensitive database detail"), false);
+    } finally { await new Promise((resolve) => server.close(resolve)); }
+  }
+});
