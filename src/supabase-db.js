@@ -1,3 +1,5 @@
+const { canonicalRoomType } = require("./room-types");
+
 class DatabaseError extends Error {
   constructor(error, operation) {
     super(error?.message || "Database operation failed.");
@@ -121,12 +123,12 @@ function createSupabaseDb(supabase, logger = console, connection = {}) {
       });
       return diagnostic.success;
     },
-    async availability(room, start, end) { const data = assert(await supabase.rpc("room_availability", { requested_room_type: room, requested_check_in: start, requested_check_out: end }), "room_availability"); const result = Array.isArray(data) ? data[0] : data; return Math.max(0, Number(result?.remaining) || 0); },
+    async availability(room, start, end) { const data = assert(await supabase.rpc("room_availability", { requested_room_type: canonicalRoomType(room), requested_check_in: start, requested_check_out: end }), "room_availability"); const result = Array.isArray(data) ? data[0] : data; return Math.max(0, Number(result?.remaining) || 0); },
     async findOrderByKey(key) { return assert(await supabase.from("payment_orders").select("*").eq("idempotency_key", key).maybeSingle()); },
     async saveOrder(order) { return assert(await supabase.from("payment_orders").insert(order).select().single()); },
     async verifyOrder(fields) { const existing = assert(await supabase.from("payment_orders").select("*").eq("razorpay_order_id", fields.razorpay_order_id).maybeSingle()); if (!existing) return null; return assert(await supabase.from("payment_orders").update({ ...fields, status: "verified", verified_at: new Date().toISOString() }).eq("id", existing.id).select().single()); },
     async getVerifiedOrder(orderId, paymentId) { if (!orderId || !paymentId) return null; return assert(await supabase.from("payment_orders").select("*").eq("razorpay_order_id", orderId).eq("razorpay_payment_id", paymentId).eq("status", "verified").maybeSingle(), "verified_order_lookup"); },
-    async createBookingAtomic(booking) { const data = assert(await supabase.rpc("create_booking_atomic", { booking_data: booking }), "create_booking_atomic"); return Array.isArray(data) ? data[0] : data; },
+    async createBookingAtomic(booking) { const data = assert(await supabase.rpc("create_booking_atomic", { booking_data: { ...booking, room_type: canonicalRoomType(booking.room_type) } }), "create_booking_atomic"); return Array.isArray(data) ? data[0] : data; },
     async markEmailSent(id) { return assert(await supabase.from("bookings").update({ email_sent_at: new Date().toISOString() }).eq("id", id).is("email_sent_at", null)); },
     async createReview(review) { return assert(await supabase.from("reviews").insert({ ...review, status: "pending" })); },
     async approvedReviews() { return assert(await supabase.from("reviews").select("id,customer_name,rating,review,created_at").eq("status", "approved").order("created_at", { ascending: false }).limit(100)); },
