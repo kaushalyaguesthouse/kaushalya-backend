@@ -121,7 +121,7 @@ function createSupabaseDb(supabase, logger = console, connection = {}) {
       });
       return diagnostic.success;
     },
-    async availability(room, start, end, inventory) { const data = assert(await supabase.from("bookings").select("id").eq("room_type", room).in("booking_status", ["Pending", "Confirmed"]).lt("check_in", end).gt("check_out", start)); return Math.max(0, inventory - data.length); },
+    async availability(room, start, end, inventory) { const data = assert(await supabase.rpc("room_availability", { requested_room_type: room, requested_check_in: start, requested_check_out: end, configured_inventory: inventory }), "room_availability"); const result = Array.isArray(data) ? data[0] : data; return Math.max(0, Number(result?.remaining) || 0); },
     async findOrderByKey(key) { return assert(await supabase.from("payment_orders").select("*").eq("idempotency_key", key).maybeSingle()); },
     async saveOrder(order) { return assert(await supabase.from("payment_orders").insert(order).select().single()); },
     async verifyOrder(fields) { const existing = assert(await supabase.from("payment_orders").select("*").eq("razorpay_order_id", fields.razorpay_order_id).maybeSingle()); if (!existing) return null; return assert(await supabase.from("payment_orders").update({ ...fields, status: "verified", verified_at: new Date().toISOString() }).eq("id", existing.id).select().single()); },
