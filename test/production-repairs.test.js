@@ -61,6 +61,28 @@ test("booking normalization diagnostics contain only incoming and canonical room
   });
 });
 
+test("booking response does not await email and only confirmed delivery is persisted", async () => {
+  let finishDelivery;
+  const delivery = new Promise((resolve) => { finishDelivery = resolve; });
+  const booking = { ...base, id: "123e4567-e89b-12d3-a456-426614174000", booking_id: "KGH-email", room_type: "Standard", booking_status: "Confirmed", payment_status: "Pending", amount: 1800, advance_amount: 0 };
+  let marked = 0;
+  const db = {
+    async createBookingAtomic() { return booking; },
+    async markEmailSent(id) { assert.equal(id, booking.id); marked += 1; }
+  };
+  const mailer = { async sendBooking() { await delivery; } };
+  await withServer({ db, mailer, logger: { info() {}, error() {} } }, async (url) => {
+    const response = await fetch(`${url}/create-booking`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "email-does-not-block" }, body: JSON.stringify({ ...base, room_type: "Standard", payment_type: "Pay Later" }) });
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), { success: true, booking_id: booking.booking_id, booking: [booking] });
+    assert.equal(marked, 0);
+    finishDelivery();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(marked, 1);
+  });
+});
+
 test("successful admin login writes an audit record", () => {
   const records = [];
   const db = { async createAuditLog(record) { records.push(record); return { id: 1 }; } };

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createMailer } = require("../src/mailer");
+const { createMailer, PROVIDER_TIMEOUT_MS } = require("../src/mailer");
 
 const booking = {
   booking_id: "KGH-123", customer_name: "Guest", email: "guest@example.com", phone: "+919876543210",
@@ -54,4 +54,16 @@ test("both webhook deliveries are attempted when one fails", async (t) => {
 
   await assert.rejects(createMailer(config()).sendBooking(booking, {}), /booking email delivery request/);
   assert.equal(attempts, 2);
+});
+
+test("provider requests carry the strict timeout signal", async (t) => {
+  const signals = [];
+  t.mock.method(global, "fetch", async (_url, options) => {
+    signals.push(options.signal);
+    return { ok: true, status: 200 };
+  });
+  await createMailer(config()).sendBooking(booking, {});
+  assert.equal(PROVIDER_TIMEOUT_MS, 5000);
+  assert.equal(signals.length, 2);
+  assert.ok(signals.every((signal) => signal instanceof AbortSignal));
 });

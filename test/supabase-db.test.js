@@ -56,3 +56,23 @@ test("atomic booking creation delegates inventory entirely to the database", asy
   assert.deepEqual(await db.createBookingAtomic({ room_type: "Deluxe" }), { id: "booking-id" });
   assert.deepEqual(call, { name: "create_booking_atomic", args: { booking_data: { room_type: "Deluxe" } } });
 });
+
+test("analytics explicitly paginates beyond the Supabase row cap", async () => {
+  const ranges = [];
+  const client = { from(table) {
+    assert.equal(table, "bookings");
+    const query = {
+      select() { return query; },
+      order() { return query; },
+      range(from, to) {
+        ranges.push([from, to]);
+        const length = from === 0 ? 1000 : 1;
+        return Promise.resolve({ data: Array.from({ length }, (_, index) => ({ created_at: `${from + index}` })), error: null });
+      }
+    };
+    return query;
+  } };
+  const rows = await createSupabaseDb(client).analyticsBookings();
+  assert.equal(rows.length, 1001);
+  assert.deepEqual(ranges, [[0, 999], [1000, 1999]]);
+});
