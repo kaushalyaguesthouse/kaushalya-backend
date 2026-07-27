@@ -45,6 +45,14 @@ test("availability uses the authoritative database inventory result", async () =
   let call;
   const client = { rpc(name, args) { call = { name, args }; return Promise.resolve({ data: [{ inventory: 2, occupied: 1, remaining: 1 }], error: null }); } };
   const db = createSupabaseDb(client, { error() {} });
-  assert.equal(await db.availability("Standard", "2026-08-01", "2026-08-03", 1), 1);
-  assert.deepEqual(call, { name: "room_availability", args: { requested_room_type: "Standard", requested_check_in: "2026-08-01", requested_check_out: "2026-08-03", configured_inventory: 1 } });
+  assert.equal(await db.availability("Standard", "2026-08-01", "2026-08-03"), 1);
+  assert.deepEqual(call, { name: "room_availability", args: { requested_room_type: "Standard", requested_check_in: "2026-08-01", requested_check_out: "2026-08-03" } });
+});
+
+test("atomic booking creation delegates inventory entirely to the database", async () => {
+  let call;
+  const client = { rpc(name, args) { call = { name, args }; return Promise.resolve({ data: [{ id: "booking-id" }], error: null }); } };
+  const db = createSupabaseDb(client, { error() {} });
+  assert.deepEqual(await db.createBookingAtomic({ room_type: "Deluxe" }), { id: "booking-id" });
+  assert.deepEqual(call, { name: "create_booking_atomic", args: { booking_data: { room_type: "Deluxe" } } });
 });
