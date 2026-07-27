@@ -71,9 +71,11 @@ test("analytics assigns UTC timestamps to the Asia/Kolkata business date", () =>
 test("analytics summary route requires existing admin authentication and returns no PII", async () => {
   const config = { origins: [], rooms, adminSecret: "analytics-secret", paymentMethods: [] };
   const createdToday = new Date().toISOString();
-  const routeBookings = [{ ...bookings[1], booking_status: "Confirmed", created_at: createdToday }];
+  const routeBookings = [{ ...bookings[1], id: "private-booking-id", customer_name: "Route Guest", email: "route@example.com", phone: "8888888888", booking_status: "Confirmed", created_at: createdToday }];
   const db = { analyticsBookings: async () => routeBookings };
-  const server = createApp({ config, db, razorpay: {}, logger: { error() {} } }).listen(0, "127.0.0.1");
+  const diagnostics = [];
+  const logger = { error() {}, info(event, details) { diagnostics.push({ event, details }); } };
+  const server = createApp({ config, db, razorpay: {}, logger }).listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   try {
     const url = `http://127.0.0.1:${server.address().port}/admin/analytics/summary`;
@@ -91,5 +93,25 @@ test("analytics summary route requires existing admin authentication and returns
     assert.match(body.generated_at, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(body.timezone, "Asia/Kolkata");
     for (const forbidden of ["Private Guest", "private@example.com", "9999999999", "secret", "pay_secret", "razorpay"]) assert.equal(JSON.stringify(body).toLowerCase().includes(forbidden.toLowerCase()), false);
+
+    const analyticsDiagnostics = diagnostics.filter(({ event }) => event.startsWith("ADMIN_ANALYTICS_"));
+    assert.deepEqual(analyticsDiagnostics.map(({ event }) => event), ["ADMIN_ANALYTICS_BOOKINGS_LOADED", "ADMIN_ANALYTICS_SUMMARY_CALCULATED"]);
+    assert.equal(analyticsDiagnostics[0].details.total_booking_rows, 1);
+    assert.deepEqual(analyticsDiagnostics[0].details.bookings[0], {
+      created_at: createdToday,
+      check_in: routeBookings[0].check_in,
+      check_out: routeBookings[0].check_out,
+      room_type: "Standard",
+      booking_status: "Confirmed",
+      payment_status: "Pending",
+      amount: 2000
+    });
+    assert.equal(analyticsDiagnostics[1].details.business_date, body.daily_trends.at(-1).date);
+    assert.equal(analyticsDiagnostics[1].details.today_booking_count, body.summary.today_bookings);
+    assert.equal(analyticsDiagnostics[1].details.gross_booked_value, body.revenue_totals.today.gross_booked_value);
+    assert.equal(analyticsDiagnostics[1].details.current_guest_count, body.summary.current_guests);
+    assert.deepEqual(analyticsDiagnostics[1].details.analytics_keys, Object.keys(body.analytics));
+    assert.equal(analyticsDiagnostics[1].details.analytics_numeric_values["summary.today_bookings"], body.summary.today_bookings);
+    for (const forbidden of ["Route Guest", "route@example.com", "8888888888", "private-booking-id", "authorization"]) assert.equal(JSON.stringify(analyticsDiagnostics).includes(forbidden), false);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
