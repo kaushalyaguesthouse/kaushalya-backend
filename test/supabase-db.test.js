@@ -40,3 +40,11 @@ test("health failure classifier covers schema, permissions, network, and query e
   assert.equal(classifyHealthFailure({ code: "42501", message: "permission denied" }, 403), "permission_denied");
   assert.equal(classifyHealthFailure(Object.assign(new Error("fetch failed"), { cause: { code: "ECONNREFUSED" } }), null), "network_error");
 });
+
+test("availability uses the authoritative database inventory result", async () => {
+  let call;
+  const client = { rpc(name, args) { call = { name, args }; return Promise.resolve({ data: [{ inventory: 2, occupied: 1, remaining: 1 }], error: null }); } };
+  const db = createSupabaseDb(client, { error() {} });
+  assert.equal(await db.availability("Standard", "2026-08-01", "2026-08-03", 1), 1);
+  assert.deepEqual(call, { name: "room_availability", args: { requested_room_type: "Standard", requested_check_in: "2026-08-01", requested_check_out: "2026-08-03", configured_inventory: 1 } });
+});
